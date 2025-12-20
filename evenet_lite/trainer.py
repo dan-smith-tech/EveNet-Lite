@@ -394,7 +394,8 @@ class Trainer:
                     extra = {"epoch": epoch}
                     if self.scheduler:
                         extra["scheduler"] = self.scheduler.state_dict()
-                    self.save_checkpoint(self.config.checkpoint_path, extra)
+                    periodic_path = self._checkpoint_filename(Path(self.config.checkpoint_path), epoch, metric=None)
+                    self.save_checkpoint(str(periodic_path), extra)
 
                 if self.config.save_top_k > 0:
                     self._maybe_save_best_checkpoint(merged, epoch)
@@ -449,12 +450,30 @@ class Trainer:
         key_fn = (lambda item: item[0]) if self.config.minimize_metric else (lambda item: -item[0])
         return max(self._best_checkpoints, key=key_fn)
 
-    def _checkpoint_filename(self, base: Path, epoch: int, metric: float) -> Path:
-        safe_metric = self.config.monitor_metric.replace("/", "_")
+    def _ensure_dir_like_base(self, base: Path) -> Path:
+        if base.exists() and base.is_file():
+            raise ValueError(
+                f"Checkpoint path {base} is a file but is treated as a directory; "
+                "please provide a filename with an extension or remove the file."
+            )
+        base.mkdir(parents=True, exist_ok=True)
+        return base
+
+    def _checkpoint_filename(self, base: Path, epoch: int, metric: Optional[float]) -> Path:
         suffix = base.suffix or ".pt"
-        stem = base.stem if base.suffix else base.name
+        stem = base.stem if base.suffix else (base.name or "checkpoint")
+        base_is_dir = base.is_dir() or base.suffix == ""
+
+        if base_is_dir:
+            base = self._ensure_dir_like_base(base)
+
+        if metric is None:
+            filename = f"{stem}-epoch{epoch + 1:04d}{suffix}"
+            return base / filename if base_is_dir else base.with_name(filename)
+
+        safe_metric = self.config.monitor_metric.replace("/", "_")
         filename = f"{stem}-{safe_metric}-epoch{epoch + 1:04d}-{metric:.4f}{suffix}"
-        if base.is_dir() or base.suffix == "":
+        if base_is_dir:
             return base / filename
         return base.with_name(filename)
 
