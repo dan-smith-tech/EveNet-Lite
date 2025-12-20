@@ -49,6 +49,8 @@ class Trainer:
         self._init_distributed()
         self.device = self._resolve_device(config.device)
 
+        self.global_step = 0
+
         self.class_labels = class_labels
         self.num_classes = len(class_labels) if class_labels is not None else self._infer_num_classes(model)
         self.train_accuracy = None
@@ -305,6 +307,7 @@ class Trainer:
         sampler: Optional[str],
         epoch_size: Optional[int] = None,
         ) -> None:
+        self.global_step = 0
         self.setup_datasets(train_data, val_data, test_data)
         # Insert normalization callback by default
         if not any(isinstance(cb, NormalizationCallback) for cb in self.callbacks):
@@ -485,11 +488,11 @@ class Trainer:
             metric_count["loss"] += targets.size(0)
 
             preds = torch.argmax(outputs, dim=1)
+            batch_accuracy = compute_accuracy(outputs, targets)
             if metric_tracker is not None:
                 metric_tracker.update(preds, targets)
             else:
-                acc = compute_accuracy(outputs, targets)
-                metric_sum["accuracy"] += acc * targets.size(0)
+                metric_sum["accuracy"] += batch_accuracy * targets.size(0)
                 metric_count["accuracy"] += targets.size(0)
 
             if self.config.compute_physics_metrics:
@@ -504,6 +507,10 @@ class Trainer:
 
             for cb in self.callbacks:
                 cb.on_batch_end(self, epoch, batch_idx, {"features": features, "targets": targets}, loss.item())
+
+            if training:
+                self.global_step += 1
+                self._log_train_step(self.global_step, loss.item(), batch_accuracy, epoch)
 
             if progress is not None:
                 progress.set_postfix({"loss": f"{loss.item():.4f}"}, refresh=False)
@@ -527,6 +534,14 @@ class Trainer:
         if progress is not None:
             progress.close()
         return metrics
+
+    def _log_train_step(self, step: int, loss: float, accuracy: float, epoch: int) -> None:
+        if self.wandb_run is None or not self.is_rank_zero():
+            return
+        self.wandb_run.log(
+            {"train/loss": loss, "train/accuracy": accuracy, "epoch": epoch + 1},
+            step=step,
+        )
 
     def _compute_epoch_physics_metrics(
         self,
