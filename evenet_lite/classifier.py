@@ -78,6 +78,7 @@ class EvenetLiteClassifier:
             train_data: Tuple[Dict[str, torch.Tensor], torch.Tensor, Optional[torch.Tensor]],
             val_data: Optional[Tuple[Dict[str, torch.Tensor], torch.Tensor, Optional[torch.Tensor]]] = None,
             feature_names: Optional[Dict[str, Iterable[str]]] = None,
+            normalization_rules: Optional[Dict[str, Dict[str, str]]] = None,
             callbacks: Optional[List[Callback]] = None,
             epochs: int = 10,
             batch_size: int = 256,
@@ -92,7 +93,12 @@ class EvenetLiteClassifier:
         self.feature_names = feature_names
         callback_list = callbacks or []
         if not any(isinstance(cb, NormalizationCallback) for cb in callback_list):
-            callback_list = [NormalizationCallback()] + callback_list
+            callback_list = [NormalizationCallback(normalization_rules=normalization_rules)] + callback_list
+        elif normalization_rules is not None:
+            for cb in callback_list:
+                if isinstance(cb, NormalizationCallback):
+                    cb.set_rules(normalization_rules)
+                    break
 
         self.config.checkpoint_path = checkpoint_path
         self.config.resume_from = resume_from
