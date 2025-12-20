@@ -1,24 +1,48 @@
+"""EveNet backbone wrapper used by Evenet-Lite trainers.
+
+This module re-exports the reference EveNetLite architecture that stitches
+together the upstream `evenet` submodule components (embedding, PET body,
+object encoder, and classification head). Users are expected to bring a
+populated `evenet` submodule (e.g., via git submodule) so these imports
+resolve at runtime.
+"""
+
+from __future__ import annotations
+
+from typing import List
+
 import torch
-import torch.nn.functional as F
-from torch import Tensor, nn
-from typing import Dict, Optional, Any, Union, List
-import re
-import numpy as np
+from torch import nn
 
 from evenet.control.global_config import DotDict
-from evenet.network.body.normalizer import Normalizer
 from evenet.network.body.embedding import GlobalVectorEmbedding, PETBody
 from evenet.network.body.object_encoder import ObjectEncoder
 from evenet.network.heads.classification.classification_head import ClassificationHead
 
+
 class EveNetLite(nn.Module):
+    """Thin EveNet wrapper exposing a classification head.
+
+    Parameters
+    ----------
+    config:
+        Parsed EveNet configuration (DotDict) providing Body and Classification
+        sections.
+    global_input_dim:
+        Dimensionality of global (per-event) features.
+    sequential_input_dim:
+        Dimensionality of sequential/object-level features.
+    cls_label:
+        List of class labels for the classification head.
+    """
+
     def __init__(
-            self,
-            config: DotDict,
-            global_input_dim: int,
-            sequential_input_dim: int,
-            cls_label: List[str],
-    ):
+        self,
+        config: DotDict,
+        global_input_dim: int,
+        sequential_input_dim: int,
+        cls_label: List[str],
+    ) -> None:
         super().__init__()
 
         self.network_cfg = config
@@ -40,10 +64,10 @@ class EveNetLite(nn.Module):
             activation_type=global_embedding_cfg.linear_activation,
             skip_connection=global_embedding_cfg.skip_connection,
             num_embedding_layers=global_embedding_cfg.num_embedding_layers,
-            dropout=global_embedding_cfg.dropout
+            dropout=global_embedding_cfg.dropout,
         )
 
-        # [1] PET Body
+        # [2] PET Body
         pet_config = self.network_cfg.Body.PET
         self.PET = PETBody(
             num_feat=self.sequential_input_dim,
@@ -63,7 +87,7 @@ class EveNetLite(nn.Module):
             mode=pet_config.mode,
         )
 
-        # [2] Classification + Regression + Assignment Body
+        # [3] Classification + Regression + Assignment Body
         obj_encoder_cfg = self.network_cfg.Body.ObjectEncoder
         self.ObjectEncoder = ObjectEncoder(
             input_dim=pet_config.hidden_dim,
@@ -80,7 +104,7 @@ class EveNetLite(nn.Module):
             encoder_skip_connection=obj_encoder_cfg.encoder_skip_connection,
         )
 
-        # [3] Classification Head
+        # [4] Classification Head
         cls_cfg = self.network_cfg.Classification
         self.Classification = ClassificationHead(
             input_dim=obj_encoder_cfg.hidden_dim,
@@ -93,12 +117,14 @@ class EveNetLite(nn.Module):
             num_attention_heads=cls_cfg.num_attention_heads,
         )
 
-    def forward(self, x, x_mask, glob):
-        input_point_cloud = x # (B, N, D)
-        B, N, D = input_point_cloud.shape
-        input_point_cloud_mask = x_mask.unsqueeze(-1) # (B, N, 1)
-        global_conditions = glob.unsqueeze(1) # (B, 1, Dg)
-        global_conditions_mask = torch.ones((B, 1, 1), device=input_point_cloud.device) # (B, 1, 1)
+    def forward(self, x: torch.Tensor, x_mask: torch.Tensor, glob: torch.Tensor) -> torch.Tensor:
+        """Apply EveNet backbone and classification head."""
+
+        input_point_cloud = x  # (B, N, D)
+        B, _N, _D = input_point_cloud.shape
+        input_point_cloud_mask = x_mask.unsqueeze(-1)  # (B, N, 1)
+        global_conditions = glob.unsqueeze(1)  # (B, 1, Dg)
+        global_conditions_mask = torch.ones((B, 1, 1), device=input_point_cloud.device)  # (B, 1, 1)
         time = torch.zeros((B,), device=input_point_cloud.device)
         full_attn_mask = None
         time_masking = torch.zeros_like(input_point_cloud_mask).float()
@@ -106,7 +132,7 @@ class EveNetLite(nn.Module):
 
         full_global_conditions = self.GlobalEmbedding(
             x=global_conditions * global_feature_mask,
-            mask=global_conditions_mask
+            mask=global_conditions_mask,
         )
 
         local_points = input_point_cloud[..., self.local_feature_indices]
@@ -116,17 +142,20 @@ class EveNetLite(nn.Module):
             mask=input_point_cloud_mask,
             attn_mask=full_attn_mask,
             time=time,
-            time_masking=time_masking
+            time_masking=time_masking,
         )
         embeddings, embedded_global_conditions, event_token = self.ObjectEncoder(
             encoded_vectors=full_input_point_cloud,
             mask=input_point_cloud_mask,
             condition_vectors=full_global_conditions,
-            condition_mask=global_conditions_mask
+            condition_mask=global_conditions_mask,
         )
         classifications = self.Classification(
             x=embeddings,
             x_mask=input_point_cloud_mask,
-            event_token=event_token
+            event_token=event_token,
         )
         return classifications["classification/EVENT"]
+
+
+__all__ = ["EveNetLite"]

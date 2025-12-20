@@ -12,13 +12,34 @@ pip install -e .
 
 ## Core API
 
+### Building the EveNet backbone
+
+`EvenetLiteClassifier` is designed to wrap a real EveNet backbone. The repository
+expects the upstream `evenet` submodule to be present (e.g., via `git submodule
+update --init`) so that the model components can be imported. The provided
+`evenet_lite.model.EveNetLite` stitches the EveNet embeddings, PET body, object
+encoder, and classification head together.
+
+```python
+from evenet.control.global_config import DotDict
+from evenet_lite import EveNetLite
+
+cfg = DotDict(...)  # populate from your EveNet config
+backbone = EveNetLite(
+    config=cfg,
+    global_input_dim=NUM_GLOBAL_FEATURES,
+    sequential_input_dim=NUM_OBJECT_FEATURES,
+    cls_label=["background", "signal"],
+)
+```
+
 ### High-level classifier
 
 ```python
 from evenet_lite import EvenetLiteClassifier
 
 clf = EvenetLiteClassifier(
-    model=evenet_core_model,
+    model=backbone,
     num_classes=2,
     device="auto",        # "cpu", "cuda", or "auto"
     lr=1e-3,
@@ -90,6 +111,7 @@ Use `save_checkpoint` and `load_checkpoint` to persist or restore model, optimiz
 - `evenet_lite.metrics`: built-in accuracy and AUC helpers.
 - `evenet_lite.checkpoint`: checkpoint save/load helpers.
 - `evenet_lite.hf_utils`: Hugging Face Hub download helper.
+- `evenet_lite.model`: EveNet backbone construction using the `evenet` submodule components.
 
 ## Minimal end-to-end example
 
