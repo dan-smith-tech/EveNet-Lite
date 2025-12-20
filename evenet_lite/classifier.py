@@ -32,9 +32,15 @@ class EvenetLiteClassifier:
             wandb: Optional[Dict[str, Any]] = None,
             log_level: int = logging.INFO,
     ) -> None:
-        if not logging.getLogger().handlers:
-            logging.basicConfig(level=log_level)
-        logging.getLogger().setLevel(log_level)
+        root_logger = logging.getLogger()
+        log_format = "%(asctime)s | %(levelname)s | %(message)s"
+        if not root_logger.handlers:
+            logging.basicConfig(level=log_level, format=log_format)
+        else:
+            for handler in root_logger.handlers:
+                handler.setFormatter(logging.Formatter(log_format))
+                handler.setLevel(log_level)
+        root_logger.setLevel(log_level)
         if model is None:
             default_config = Path(__file__).parent / 'config' / 'default_network_config.yaml'
             with open(str(default_config), 'r') as f:

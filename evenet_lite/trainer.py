@@ -210,6 +210,91 @@ class Trainer:
             return DDP(self.model.to(self.device))
         return self.model.to(self.device)
 
+    def _describe_sampler(self, sampler_obj: Optional[Any]) -> str:
+        if sampler_obj is None:
+            return "None (shuffled)"
+        details: List[str] = [sampler_obj.__class__.__name__]
+        if isinstance(sampler_obj, DistributedWeightedSampler):
+            details.append(f"epoch_size={sampler_obj.epoch_size}")
+            details.append(f"replacement={sampler_obj.replacement}")
+        if isinstance(sampler_obj, DistributedSampler):
+            details.append(f"num_replicas={sampler_obj.num_replicas}")
+            details.append(f"rank={sampler_obj.rank}")
+        return ", ".join(details)
+
+    def _class_stats(self, dataset: EvenetTensorDataset) -> Tuple[int, torch.Tensor, torch.Tensor]:
+        labels = dataset.labels.long()
+        inferred_classes = self.num_classes if self.num_classes is not None else int(labels.max().item() + 1)
+        num_classes = max(inferred_classes, int(labels.max().item() + 1))
+        counts = torch.bincount(labels, minlength=num_classes)
+
+        if dataset.sample_weights is None:
+            weights = torch.ones_like(labels, dtype=torch.float32)
+        else:
+            weights = torch.as_tensor(dataset.sample_weights, dtype=torch.float32)
+            finite_mask = torch.isfinite(weights)
+            weights = torch.where(finite_mask, weights, torch.zeros_like(weights))
+
+        weight_sums = torch.zeros(num_classes, dtype=torch.float32)
+        for cls_idx in range(num_classes):
+            mask = labels == cls_idx
+            if mask.any():
+                weight_sums[cls_idx] = weights[mask].sum()
+
+        return num_classes, counts, weight_sums
+
+    def _log_class_distribution(self, name: str, dataset: EvenetTensorDataset) -> None:
+        if not self.is_rank_zero():
+            return
+        num_classes, counts, weight_sums = self._class_stats(dataset)
+        total = counts.sum().item() or 1.0
+        total_weight = weight_sums.sum().item() or 1.0
+        class_names = self.class_labels or [str(i) for i in range(num_classes)]
+        parts = []
+        for idx in range(num_classes):
+            label = class_names[idx] if idx < len(class_names) else str(idx)
+            frac = counts[idx].item() / total
+            w_frac = weight_sums[idx].item() / total_weight
+            parts.append(
+                f"{label}: count={counts[idx].item()} (frac={frac:.3f}), weight_sum={weight_sums[idx].item():.3f} (frac={w_frac:.3f})"
+            )
+        logging.info("Class distribution for %s -> %s", name, " | ".join(parts))
+
+    def _log_training_overview(
+        self,
+        train_loader: DataLoader,
+        val_loader: Optional[DataLoader],
+        train_sampler: Optional[Any],
+        val_sampler: Optional[Any],
+        epochs: int,
+    ) -> None:
+        if not self.is_rank_zero():
+            return
+        logging.info(
+            "Training setup: epochs=%d, batch_size=%d, world_size=%d, device=%s",
+            epochs,
+            train_loader.batch_size,
+            self.world_size,
+            self.device,
+        )
+        logging.info(
+            "Train loader: size=%d, steps_per_epoch=%d, sampler=%s",
+            len(train_loader.dataset),
+            len(train_loader),
+            self._describe_sampler(train_sampler),
+        )
+        self._log_class_distribution("train", train_loader.dataset)
+        if val_loader is not None:
+            logging.info(
+                "Val loader: size=%d, steps_per_epoch=%d, sampler=%s",
+                len(val_loader.dataset),
+                len(val_loader),
+                self._describe_sampler(val_sampler),
+            )
+            self._log_class_distribution("val", val_loader.dataset)
+        else:
+            logging.info("Validation loader: None")
+
     def train(
         self,
         train_data: Tuple[Dict[str, torch.Tensor], torch.Tensor, Optional[torch.Tensor]],
@@ -219,7 +304,7 @@ class Trainer:
         batch_size: int,
         sampler: Optional[str],
         epoch_size: Optional[int] = None,
-    ) -> None:
+        ) -> None:
         self.setup_datasets(train_data, val_data, test_data)
         # Insert normalization callback by default
         if not any(isinstance(cb, NormalizationCallback) for cb in self.callbacks):
@@ -260,6 +345,8 @@ class Trainer:
                 shuffle=False,
                 num_workers=self.config.num_workers,
             )
+
+        self._log_training_overview(train_loader, val_loader, sampler_obj, val_loader.sampler if val_loader else None, epochs)
 
         for epoch in range(epochs):
             if isinstance(sampler_obj, (DistributedSampler, DistributedWeightedSampler)):
@@ -363,6 +450,19 @@ class Trainer:
         if metric_tracker is not None:
             metric_tracker.reset()
 
+        progress = None
+        if self.is_rank_zero():
+            try:
+                from tqdm.auto import tqdm  # type: ignore
+
+                progress = tqdm(
+                    total=len(loader),
+                    desc=f"{'Train' if training else 'Val'} Epoch {epoch + 1}",
+                    leave=False,
+                )
+            except Exception as exc:  # pragma: no cover - optional dependency
+                logging.debug("Progress bar unavailable: %s", exc)
+
         for batch_idx, (features, targets, weights) in enumerate(loader):
             features = self._prepare_features(features)
             targets = targets.long().to(self.device)
@@ -405,6 +505,10 @@ class Trainer:
             for cb in self.callbacks:
                 cb.on_batch_end(self, epoch, batch_idx, {"features": features, "targets": targets}, loss.item())
 
+            if progress is not None:
+                progress.set_postfix({"loss": f"{loss.item():.4f}"}, refresh=False)
+                progress.update(1)
+
         metric_sum_tensor = torch.tensor([metric_sum["loss"], metric_sum["accuracy"]], device=self.device)
         metric_count_tensor = torch.tensor([metric_count["loss"], metric_count["accuracy"]], device=self.device)
         metric_sum_tensor = self._all_reduce_tensor(metric_sum_tensor)
@@ -420,6 +524,8 @@ class Trainer:
 
         if self.config.compute_physics_metrics and epoch_probs:
             metrics.update(self._compute_epoch_physics_metrics(epoch_probs, epoch_targets, epoch_weights))
+        if progress is not None:
+            progress.close()
         return metrics
 
     def _compute_epoch_physics_metrics(
@@ -464,7 +570,7 @@ class Trainer:
         ]:
             if key in metrics:
                 msg_parts.append(f"{key}={metrics[key]:.4f}")
-        print(" | ".join(msg_parts))
+        logging.info(" | ".join(msg_parts))
 
     def predict(self, dataset: EvenetTensorDataset, batch_size: int = 256) -> torch.Tensor:
         loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=self.config.num_workers)
