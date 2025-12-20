@@ -332,6 +332,15 @@ class Trainer:
         except TypeError:
             return model(features)
 
+    def _prepare_features(self, features: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        prepared: Dict[str, torch.Tensor] = {}
+        for name, tensor in features.items():
+            tensor = tensor.to(self.device)
+            if name in {"x", "globals"}:
+                tensor = tensor.float()
+            prepared[name] = tensor
+        return prepared
+
     def _run_epoch(
         self,
         model: torch.nn.Module,
@@ -355,8 +364,8 @@ class Trainer:
             metric_tracker.reset()
 
         for batch_idx, (features, targets, weights) in enumerate(loader):
-            features = {k: v.to(self.device) for k, v in features.items()}
-            targets = targets.to(self.device)
+            features = self._prepare_features(features)
+            targets = targets.long().to(self.device)
             weight_tensor: Optional[torch.Tensor] = None
             if weights is not None:
                 weights = weights.to(self.device)
@@ -464,7 +473,7 @@ class Trainer:
         outputs: List[torch.Tensor] = []
         with torch.no_grad():
             for features, _, _ in loader:
-                features = {k: v.to(self.device) for k, v in features.items()}
+                features = self._prepare_features(features)
                 outputs.append(self._forward(self.model, features).cpu())
         return torch.cat(outputs, dim=0)
 
@@ -483,8 +492,8 @@ class Trainer:
         weights_accum: List[torch.Tensor] = []
         with torch.no_grad():
             for features, targets, weights in loader:
-                features = {k: v.to(self.device) for k, v in features.items()}
-                targets = targets.to(self.device)
+                features = self._prepare_features(features)
+                targets = targets.long().to(self.device)
                 weight_tensor = weights.to(self.device) if weights is not None else None
                 if weight_tensor is not None and torch.any(torch.isinf(weight_tensor)):
                     weight_tensor = None

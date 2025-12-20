@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import torch
 import yaml
@@ -28,7 +28,13 @@ class EvenetLiteClassifier:
             scheduler_fn: Optional[callable] = None,
             global_input_dim: int = 10,
             sequential_input_dim: int = 7,
+            use_wandb: bool = False,
+            wandb: Optional[Dict[str, Any]] = None,
+            log_level: int = logging.INFO,
     ) -> None:
+        if not logging.getLogger().handlers:
+            logging.basicConfig(level=log_level)
+        logging.getLogger().setLevel(log_level)
         if model is None:
             default_config = Path(__file__).parent / 'config' / 'default_network_config.yaml'
             with open(str(default_config), 'r') as f:
@@ -54,6 +60,8 @@ class EvenetLiteClassifier:
             weight_decay=weight_decay,
             grad_clip=grad_clip,
             scheduler_fn=scheduler_fn,
+            use_wandb=use_wandb,
+            wandb=wandb,
         )
         self.trainer: Optional[Trainer] = None
         self.normalizer: Optional[EvenetLiteNormalizer] = None
