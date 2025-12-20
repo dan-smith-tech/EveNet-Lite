@@ -1,3 +1,5 @@
+import logging
+
 from evenet_lite import EvenetLiteClassifier
 import torch
 
@@ -26,34 +28,66 @@ if __name__ == '__main__':
     ], dim=0)
 
     X_val = {
-        k if k != 'global' else 'globals': torch.cat([valid_data['sig'][k], valid_data['bkg'][k]], dim=0)
+        k if k != 'global' else 'globals': torch.cat([valid_data['sig'][k], valid_data['bkg'][k]], dim=0)[:1000, ...]
         for k in ['x', 'x_mask', 'global']
     }
     y_val = torch.cat([
-        torch.ones(len(valid_data['sig']["x"])),
-        torch.zeros(len(valid_data['bkg']["x"])),
+        torch.ones(len(valid_data['sig']["x"]))[:500],
+        torch.zeros(len(valid_data['bkg']["x"]))[:500],
     ], dim=0)
 
-    obj_feature_names = ['pt', 'eta', 'phi', 'E', 'isBTag', 'isLepton', 'Charge']
+    obj_feature_names = ['energy', 'pt', 'eta', 'phi', 'isBTag', 'isLepton', 'Charge']
     global_feature_names = ['met', 'met_phi', 'nLepton', 'nbJet', 'HT', 'HT_lep', 'M_all', 'M_leps', 'M_bjets']
 
     clf = EvenetLiteClassifier(
-        class_labels=['signal', 'bkg'],
+        class_labels=['bkg', 'signal'],
         device="auto",  # "cpu", "cuda", or "auto"
         lr=1e-3,
         weight_decay=0.01,
         grad_clip=1.0,  # optional gradient clipping
+        log_level=logging.INFO,
+        use_wandb=True,
+        wandb={
+            'project': 'EvenetLite',
+            'name': 'test',
+        }
     )
 
     clf.fit(
         train_data=(X_train, y_train, None),
         val_data=(X_val, y_val, None),
-        feature_names={"objects": obj_feature_names, "globals": global_feature_names},
         callbacks=[],  # custom callbacks optional; normalization auto-injected
         epochs=10,
         batch_size=256,
         sampler="weighted",  # or None
-        epoch_size=None,
+        epoch_size=1280, # or None,
+        save_top_k=2,
+        checkpoint_every=1,
+        checkpoint_path="./checkpoint",
+        feature_names={"objects": obj_feature_names, "globals": global_feature_names},
+        normalization_rules={
+            "x": {
+                "energy": "log_normalize",
+                "pt": "log_normalize",
+                "eta": "normalize",
+                "phi": "normalize_uniform",
+                "btag": "none",
+                "isLepton": "none",
+                "charge": "none",
+            },
+            "global": {
+                "met": "log_normalize",
+                "met_phi": "normalize",
+                "nLepton": "none",
+                "nbJet": "none",
+                "nJet": "none",
+                "HT": "log_normalize",
+                "HT_lep": "log_normalize",
+                "M_all": "log_normalize",
+                "M_leps": "log_normalize",
+                "M_bjets": "log_normalize",
+            }
+        }
     )
     #
     # probs = clf.predict(X_test, batch_size=256)
