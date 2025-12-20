@@ -142,7 +142,7 @@ def calculate_physics_metrics(
 
     edges = np.linspace(0, 1, bins + 1)
 
-    max_sic, max_sic_unc, sic, sic_unc = compute_sic_from_scores(targets, scores, weights, edges)
+    max_sic, max_sic_unc, sic, sic_unc = compute_sic_from_scores(targets, scores, weights, edges, min_bkg_events=100)
 
     try:
         auc_val = roc_auc_score(targets, scores, sample_weight=weights)
