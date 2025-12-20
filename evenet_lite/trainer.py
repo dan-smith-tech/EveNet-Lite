@@ -194,6 +194,12 @@ class Trainer:
             dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
         return tensor
 
+    def _reduce_mean_scalar(self, value: float) -> float:
+        tensor = torch.tensor(value, device=self.device)
+        tensor = self._all_reduce_tensor(tensor)
+        tensor = tensor / max(1, self.world_size)
+        return tensor.item()
+
     def setup_datasets(
         self,
         train_data: Tuple[Dict[str, torch.Tensor], torch.Tensor, Optional[torch.Tensor]],
@@ -495,6 +501,9 @@ class Trainer:
                 metric_sum["accuracy"] += batch_accuracy * targets.size(0)
                 metric_count["accuracy"] += targets.size(0)
 
+            reduced_loss = self._reduce_mean_scalar(loss.item())
+            reduced_accuracy = self._reduce_mean_scalar(batch_accuracy)
+
             if self.config.compute_physics_metrics:
                 epoch_probs.append(outputs.detach())
                 epoch_targets.append(targets.detach())
@@ -510,10 +519,10 @@ class Trainer:
 
             if training:
                 self.global_step += 1
-                self._log_train_step(self.global_step, loss.item(), batch_accuracy, epoch)
+                self._log_train_step(self.global_step, reduced_loss, reduced_accuracy, epoch)
 
             if progress is not None:
-                progress.set_postfix({"loss": f"{loss.item():.4f}"}, refresh=False)
+                progress.set_postfix({"loss": f"{reduced_loss:.4f}"}, refresh=False)
                 progress.update(1)
 
         metric_sum_tensor = torch.tensor([metric_sum["loss"], metric_sum["accuracy"]], device=self.device)
