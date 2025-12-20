@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+import copy
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import torch
@@ -16,6 +17,52 @@ from .model import EveNetLite
 
 class EvenetLiteClassifier:
     """High-level classifier API for Evenet-Lite."""
+
+    DEFAULT_FEATURE_NAMES = {
+        "x": [
+            "energy",
+            "pt",
+            "eta",
+            "phi",
+            "isBTag",
+            "isLepton",
+            "charge",
+        ],
+        "globals": [
+            "met",
+            "met_phi",
+            "nLepton",
+            "nbJet",
+            "HT",
+            "HT_lep",
+            "M_all",
+            "M_leps",
+            "M_bjets",
+        ],
+    }
+
+    DEFAULT_NORMALIZATION_RULES = {
+        "x": {
+            "energy": "log_normalize",
+            "pt": "log_normalize",
+            "eta": "normalize",
+            "phi": "normalize_uniform",
+            "isBTag": "none",
+            "isLepton": "none",
+            "charge": "none",
+        },
+        "globals": {
+            "met": "log_normalize",
+            "met_phi": "normalize",
+            "nLepton": "none",
+            "nbJet": "none",
+            "HT": "log_normalize",
+            "HT_lep": "log_normalize",
+            "M_all": "log_normalize",
+            "M_leps": "log_normalize",
+            "M_bjets": "log_normalize",
+        },
+    }
 
     def __init__(
             self,
@@ -87,10 +134,17 @@ class EvenetLiteClassifier:
             checkpoint_path: Optional[str] = None,
             resume_from: Optional[str] = None,
             checkpoint_every: int = 1,
+            save_top_k: int = 0,
+            monitor_metric: str = "val_loss",
+            minimize_metric: bool = True,
     ) -> None:
         if feature_names is None:
-            feature_names = {k: [] for k in train_data[0]}
+            feature_names = copy.deepcopy(self.DEFAULT_FEATURE_NAMES)
+        else:
+            feature_names = copy.deepcopy(feature_names)
         self.feature_names = feature_names
+        if normalization_rules is None:
+            normalization_rules = copy.deepcopy(self.DEFAULT_NORMALIZATION_RULES)
         callback_list = callbacks or []
         if not any(isinstance(cb, NormalizationCallback) for cb in callback_list):
             callback_list = [NormalizationCallback(normalization_rules=normalization_rules)] + callback_list
@@ -103,6 +157,9 @@ class EvenetLiteClassifier:
         self.config.checkpoint_path = checkpoint_path
         self.config.resume_from = resume_from
         self.config.checkpoint_every = checkpoint_every
+        self.config.save_top_k = save_top_k
+        self.config.monitor_metric = monitor_metric
+        self.config.minimize_metric = minimize_metric
 
         self.trainer = Trainer(self.model, feature_names, self.config, callback_list, class_labels=self.class_labels)
         self.trainer.train(train_data, val_data, None, epochs, batch_size, sampler, epoch_size)

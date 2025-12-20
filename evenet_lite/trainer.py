@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 import logging
 import os
+from pathlib import Path
 
 import torch
 import torch.distributed as dist
@@ -31,6 +32,9 @@ class TrainerConfig:
     wandb: Optional[Dict[str, Any]] = None
     compute_physics_metrics: bool = True
     physics_bins: int = 1000
+    save_top_k: int = 0
+    monitor_metric: str = "val_loss"
+    minimize_metric: bool = True
 
 
 class Trainer:
@@ -66,6 +70,7 @@ class Trainer:
 
         self.optimizer: torch.optim.Optimizer
         self.scheduler: Optional[Any] = None
+        self._best_checkpoints: List[Tuple[float, str]] = []
 
     def _init_distributed(self) -> None:
         if dist.is_available() and not dist.is_initialized():
@@ -391,6 +396,9 @@ class Trainer:
                         extra["scheduler"] = self.scheduler.state_dict()
                     self.save_checkpoint(self.config.checkpoint_path, extra)
 
+                if self.config.save_top_k > 0:
+                    self._maybe_save_best_checkpoint(merged, epoch)
+
             for cb in self.callbacks:
                 cb.on_epoch_end(self, epoch, merged)
 
@@ -409,6 +417,65 @@ class Trainer:
             normalizer_state=normalizer_state,
             extra=extra,
         )
+
+    def _extract_monitored_metric(self, metrics: Dict[str, float]) -> Optional[float]:
+        if not metrics:
+            return None
+        value = metrics.get(self.config.monitor_metric)
+        if value is None:
+            return None
+        if isinstance(value, float):
+            return value
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _should_replace_worst(self, metric: float) -> bool:
+        if len(self._best_checkpoints) < self.config.save_top_k:
+            return True
+        worst_metric, _ = self._worst_checkpoint()
+        if self.config.minimize_metric:
+            return metric < worst_metric
+        return metric > worst_metric
+
+    def _worst_checkpoint(self) -> Tuple[float, str]:
+        key_fn = (lambda item: item[0]) if self.config.minimize_metric else (lambda item: -item[0])
+        return max(self._best_checkpoints, key=key_fn)
+
+    def _checkpoint_filename(self, base: Path, epoch: int, metric: float) -> Path:
+        safe_metric = self.config.monitor_metric.replace("/", "_")
+        suffix = base.suffix or ".pt"
+        stem = base.stem if base.suffix else base.name
+        filename = f"{stem}-{safe_metric}-epoch{epoch + 1:04d}-{metric:.4f}{suffix}"
+        if base.is_dir() or base.suffix == "":
+            return base / filename
+        return base.with_name(filename)
+
+    def _maybe_save_best_checkpoint(self, metrics: Dict[str, float], epoch: int) -> None:
+        metric_value = self._extract_monitored_metric(metrics)
+        if metric_value is None or not self.config.checkpoint_path:
+            return
+
+        if not self._should_replace_worst(metric_value):
+            return
+
+        checkpoint_base = Path(self.config.checkpoint_path)
+        checkpoint_path = self._checkpoint_filename(checkpoint_base, epoch, metric_value)
+
+        extra = {"epoch": epoch, "monitored_metric": metric_value}
+        if self.scheduler:
+            extra["scheduler"] = self.scheduler.state_dict()
+        self.save_checkpoint(str(checkpoint_path), extra)
+
+        self._best_checkpoints.append((metric_value, str(checkpoint_path)))
+        if len(self._best_checkpoints) > self.config.save_top_k:
+            worst_metric, worst_path = self._worst_checkpoint()
+            try:
+                Path(worst_path).unlink(missing_ok=True)
+            except OSError:
+                pass
+            self._best_checkpoints = [(m, p) for m, p in self._best_checkpoints if (m, p) != (worst_metric, worst_path)]
 
     def restore_checkpoint(self, path: str, map_location: Optional[str] = None) -> None:
         checkpoint = load_checkpoint(path, map_location=map_location)
