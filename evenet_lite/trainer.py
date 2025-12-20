@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+import logging
 import os
 
 import torch
@@ -12,7 +13,7 @@ from torch.utils.data import DataLoader, DistributedSampler
 from .callbacks import Callback, NormalizationCallback
 from .data import EvenetTensorDataset, build_sampler, DistributedWeightedSampler
 from .checkpoint import load_checkpoint, save_checkpoint
-from .metrics import compute_accuracy, compute_auc, compute_loss, summarize_metrics
+from .metrics import calculate_physics_metrics, compute_accuracy, compute_loss, summarize_metrics
 
 
 @dataclass
@@ -26,6 +27,10 @@ class TrainerConfig:
     checkpoint_path: Optional[str] = None
     checkpoint_every: int = 1
     resume_from: Optional[str] = None
+    use_wandb: bool = False
+    wandb: Optional[Dict[str, Any]] = None
+    compute_physics_metrics: bool = True
+    physics_bins: int = 1000
 
 
 class Trainer:
@@ -35,6 +40,7 @@ class Trainer:
         feature_names: Dict[str, Iterable[str]],
         config: TrainerConfig,
         callbacks: Optional[List[Callback]] = None,
+        class_labels: Optional[List[str]] = None,
     ) -> None:
         self.model = model
         self.feature_names = feature_names
@@ -42,6 +48,15 @@ class Trainer:
         self.callbacks: List[Callback] = callbacks or []
         self._init_distributed()
         self.device = self._resolve_device(config.device)
+
+        self.class_labels = class_labels
+        self.num_classes = len(class_labels) if class_labels is not None else self._infer_num_classes(model)
+        self.train_accuracy = None
+        self.val_accuracy = None
+        self._init_metrics()
+        self.wandb_run = None
+        self._maybe_init_wandb()
+        self._warned_non_binary_physics = False
 
         self.train_dataset: EvenetTensorDataset
         self.val_dataset: Optional[EvenetTensorDataset] = None
@@ -84,6 +99,66 @@ class Trainer:
             return torch.device("cpu")
         return torch.device(device)
 
+    def _infer_num_classes(self, model: torch.nn.Module) -> Optional[int]:
+        if hasattr(model, "num_classes"):
+            classes = getattr(model, "num_classes")
+            if isinstance(classes, dict):
+                return next(iter(classes.values()), None)
+            if isinstance(classes, int):
+                return classes
+        return None
+
+    def _init_metrics(self) -> None:
+        if self.num_classes is None:
+            logging.info("Skipping torchmetrics initialization because num_classes could not be inferred.")
+            return
+        try:
+            from torchmetrics import Accuracy  # type: ignore
+
+            self.train_accuracy = Accuracy(
+                task="multiclass",
+                num_classes=self.num_classes,
+                compute_on_cpu=True,
+                sync_on_compute=True,
+            ).to(self.device)
+            self.val_accuracy = Accuracy(
+                task="multiclass",
+                num_classes=self.num_classes,
+                compute_on_cpu=True,
+                sync_on_compute=True,
+            ).to(self.device)
+            logging.info("Initialized torchmetrics Accuracy with num_classes=%s", self.num_classes)
+        except Exception as exc:  # pragma: no cover - optional dependency
+            logging.warning("torchmetrics is unavailable; falling back to manual accuracy. Error: %s", exc)
+
+    def _maybe_init_wandb(self) -> None:
+        if not self.config.use_wandb:
+            return
+        try:
+            import wandb
+        except Exception as exc:  # pragma: no cover - optional dependency
+            logging.warning("Weights & Biases requested but import failed: %s", exc)
+            return
+
+        if not self.is_rank_zero():
+            logging.info("Skipping Weights & Biases init on non-zero rank %s", self.rank)
+            return
+
+        wandb_settings = self.config.wandb or {}
+        self.wandb_run = wandb.init(
+            project=wandb_settings.get("project"),
+            name=wandb_settings.get("name"),
+            config=wandb_settings.get("config", {}),
+            entity=wandb_settings.get("entity"),
+            mode=wandb_settings.get("mode"),
+            group=wandb_settings.get("group"),
+            job_type=wandb_settings.get("job_type"),
+            tags=wandb_settings.get("tags"),
+            notes=wandb_settings.get("notes"),
+            reinit=True,
+        )
+        logging.info("Initialized Weights & Biases run: %s", self.wandb_run.name if self.wandb_run else "<none>")
+
     def attach_normalizer(self, normalizer: Any) -> None:
         if hasattr(self, "train_dataset") and self.train_dataset is not None:
             self.train_dataset.set_normalizer(normalizer)
@@ -104,6 +179,18 @@ class Trainer:
             if isinstance(cb, NormalizationCallback) and cb.normalizer is not None:
                 return cb.normalizer.state_dict()
         return None
+
+    def _all_gather_tensor(self, tensor: torch.Tensor) -> torch.Tensor:
+        if self.world_size <= 1:
+            return tensor
+        tensor_list = [torch.zeros_like(tensor) for _ in range(self.world_size)]
+        dist.all_gather(tensor_list, tensor)
+        return torch.cat(tensor_list, dim=0)
+
+    def _all_reduce_tensor(self, tensor: torch.Tensor) -> torch.Tensor:
+        if self.world_size > 1:
+            dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
+        return tensor
 
     def setup_datasets(
         self,
@@ -195,6 +282,9 @@ class Trainer:
             if self.is_rank_zero():
                 merged = {f"train_{k}": v for k, v in train_metrics.items()}
                 merged.update({f"val_{k}": v for k, v in val_metrics.items()})
+                self._log_epoch_stdout(epoch, epochs, merged)
+                if self.wandb_run is not None:
+                    self.wandb_run.log({"epoch": epoch + 1, **merged})
             else:
                 merged = {}
 
@@ -210,6 +300,9 @@ class Trainer:
 
         for cb in self.callbacks:
             cb.on_train_end(self)
+
+        if self.wandb_run is not None and self.is_rank_zero():
+            self.wandb_run.finish()
 
     def save_checkpoint(self, path: str, extra: Optional[Dict[str, Any]] = None) -> None:
         normalizer_state = self._current_normalizer_state()
@@ -253,16 +346,25 @@ class Trainer:
 
         metric_sum: Dict[str, float] = {"loss": 0.0, "accuracy": 0.0}
         metric_count: Dict[str, int] = {"loss": 0, "accuracy": 0}
-        auc_values: List[float] = []
+        epoch_probs: List[torch.Tensor] = []
+        epoch_targets: List[torch.Tensor] = []
+        epoch_weights: List[torch.Tensor] = []
+
+        metric_tracker = self.train_accuracy if training else self.val_accuracy
+        if metric_tracker is not None:
+            metric_tracker.reset()
 
         for batch_idx, (features, targets, weights) in enumerate(loader):
             features = {k: v.to(self.device) for k, v in features.items()}
             targets = targets.to(self.device)
-            weight_tensor = weights.to(self.device) if not torch.any(torch.isinf(weights)) else None
+            weight_tensor: Optional[torch.Tensor] = None
+            if weights is not None:
+                weights = weights.to(self.device)
+                weight_tensor = None if torch.any(torch.isinf(weights)) else weights
 
             with torch.set_grad_enabled(training):
-                logits = self._forward(model, features)
-                loss = compute_loss(logits, targets, weight_tensor)
+                outputs = self._forward(model, features)
+                loss = compute_loss(outputs, targets, weight_tensor)
                 if training:
                     self.optimizer.zero_grad()
                     loss.backward()
@@ -273,21 +375,87 @@ class Trainer:
             metric_sum["loss"] += loss.item() * targets.size(0)
             metric_count["loss"] += targets.size(0)
 
-            acc = compute_accuracy(logits, targets)
-            metric_sum["accuracy"] += acc * targets.size(0)
-            metric_count["accuracy"] += targets.size(0)
+            preds = torch.argmax(outputs, dim=1)
+            if metric_tracker is not None:
+                metric_tracker.update(preds, targets)
+            else:
+                acc = compute_accuracy(outputs, targets)
+                metric_sum["accuracy"] += acc * targets.size(0)
+                metric_count["accuracy"] += targets.size(0)
 
-            auc_val = compute_auc(logits, targets)
-            if auc_val is not None:
-                auc_values.append(auc_val)
+            if self.config.compute_physics_metrics:
+                epoch_probs.append(outputs.detach())
+                epoch_targets.append(targets.detach())
+                metric_weights = (
+                    weight_tensor.detach()
+                    if weight_tensor is not None
+                    else torch.ones_like(targets, dtype=torch.float32, device=self.device)
+                )
+                epoch_weights.append(metric_weights)
 
             for cb in self.callbacks:
                 cb.on_batch_end(self, epoch, batch_idx, {"features": features, "targets": targets}, loss.item())
 
+        metric_sum_tensor = torch.tensor([metric_sum["loss"], metric_sum["accuracy"]], device=self.device)
+        metric_count_tensor = torch.tensor([metric_count["loss"], metric_count["accuracy"]], device=self.device)
+        metric_sum_tensor = self._all_reduce_tensor(metric_sum_tensor)
+        metric_count_tensor = self._all_reduce_tensor(metric_count_tensor)
+
+        metric_sum["loss"], metric_sum["accuracy"] = metric_sum_tensor.tolist()
+        metric_count["loss"] = int(metric_count_tensor[0].item())
+        metric_count["accuracy"] = int(metric_count_tensor[1].item())
+
         metrics = summarize_metrics(metric_sum, metric_count)
-        if auc_values:
-            metrics["auc"] = sum(auc_values) / len(auc_values)
+        if metric_tracker is not None:
+            metrics["accuracy"] = float(metric_tracker.compute().item())
+
+        if self.config.compute_physics_metrics and epoch_probs:
+            metrics.update(self._compute_epoch_physics_metrics(epoch_probs, epoch_targets, epoch_weights))
         return metrics
+
+    def _compute_epoch_physics_metrics(
+        self,
+        probs_list: List[torch.Tensor],
+        targets_list: List[torch.Tensor],
+        weights_list: List[torch.Tensor],
+    ) -> Dict[str, float]:
+        if self.num_classes and self.num_classes != 2 and not self._warned_non_binary_physics:
+            logging.warning(
+                "Default physics metrics assume binary classification with signal label = 1. "
+                "For multiclass tasks, please supply a custom Callback (override on_epoch_end) to compute metrics instead."
+            )
+            self._warned_non_binary_physics = True
+
+        probs = self._all_gather_tensor(torch.cat(probs_list).detach())
+        targets = self._all_gather_tensor(torch.cat(targets_list).detach())
+        weights = self._all_gather_tensor(torch.cat(weights_list).detach())
+
+        if not self.is_rank_zero():
+            return {}
+
+        metrics = calculate_physics_metrics(
+            probs=probs.cpu().numpy(),
+            targets=targets.cpu().numpy(),
+            weights=weights.cpu().numpy(),
+            bins=self.config.physics_bins,
+        )
+        return {"auc": metrics["auc"], "max_sic": metrics["max_sic"], "max_sic_unc": metrics["max_sic_unc"]}
+
+    def _log_epoch_stdout(self, epoch: int, total_epochs: int, metrics: Dict[str, float]) -> None:
+        msg_parts = [f"Epoch {epoch + 1}/{total_epochs}"]
+        for key in [
+            "train_loss",
+            "train_accuracy",
+            "train_auc",
+            "train_max_sic",
+            "val_loss",
+            "val_accuracy",
+            "val_auc",
+            "val_max_sic",
+        ]:
+            if key in metrics:
+                msg_parts.append(f"{key}={metrics[key]:.4f}")
+        print(" | ".join(msg_parts))
 
     def predict(self, dataset: EvenetTensorDataset, batch_size: int = 256) -> torch.Tensor:
         loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=self.config.num_workers)
@@ -297,8 +465,7 @@ class Trainer:
         with torch.no_grad():
             for features, _, _ in loader:
                 features = {k: v.to(self.device) for k, v in features.items()}
-                logits = self._forward(self.model, features)
-                outputs.append(torch.softmax(logits, dim=1).cpu())
+                outputs.append(self._forward(self.model, features).cpu())
         return torch.cat(outputs, dim=0)
 
     def evaluate(
@@ -311,26 +478,41 @@ class Trainer:
         self.model.eval()
         metric_sum: Dict[str, float] = {"loss": 0.0, "accuracy": 0.0}
         metric_count: Dict[str, int] = {"loss": 0, "accuracy": 0}
-        auc_values: List[float] = []
+        probs_accum: List[torch.Tensor] = []
+        targets_accum: List[torch.Tensor] = []
+        weights_accum: List[torch.Tensor] = []
         with torch.no_grad():
             for features, targets, weights in loader:
                 features = {k: v.to(self.device) for k, v in features.items()}
                 targets = targets.to(self.device)
                 weight_tensor = weights.to(self.device) if weights is not None else None
+                if weight_tensor is not None and torch.any(torch.isinf(weight_tensor)):
+                    weight_tensor = None
 
-                logits = self._forward(self.model, features)
-                loss = compute_loss(logits, targets, weight_tensor)
+                outputs = self._forward(self.model, features)
+                loss = compute_loss(outputs, targets, weight_tensor)
                 metric_sum["loss"] += loss.item() * targets.size(0)
                 metric_count["loss"] += targets.size(0)
 
-                acc = compute_accuracy(logits, targets)
+                acc = compute_accuracy(outputs, targets)
                 metric_sum["accuracy"] += acc * targets.size(0)
                 metric_count["accuracy"] += targets.size(0)
 
-                auc_val = compute_auc(logits, targets)
-                if auc_val is not None:
-                    auc_values.append(auc_val)
+                if self.config.compute_physics_metrics:
+                    probs_accum.append(outputs.cpu())
+                    targets_accum.append(targets.cpu())
+                    weights_accum.append(
+                        torch.ones_like(targets, dtype=torch.float32)
+                        if weight_tensor is None
+                        else weight_tensor.detach().cpu()
+                    )
         metrics = summarize_metrics(metric_sum, metric_count)
-        if auc_values:
-            metrics["auc"] = sum(auc_values) / len(auc_values)
+        if self.config.compute_physics_metrics and probs_accum:
+            metrics.update(
+                self._compute_epoch_physics_metrics(
+                    [p.to(self.device) for p in probs_accum],
+                    [t.to(self.device) for t in targets_accum],
+                    [w.to(self.device) for w in weights_accum],
+                )
+            )
         return metrics

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
-import yaml
+
 import torch
+import yaml
 from evenet.control.global_config import DotDict
 
 from .callbacks import Callback, EvenetLiteNormalizer, NormalizationCallback
@@ -24,15 +26,23 @@ class EvenetLiteClassifier:
             model: torch.nn.Module = None,
             grad_clip: Optional[float] = None,
             scheduler_fn: Optional[callable] = None,
+            global_input_dim: int = 10,
+            sequential_input_dim: int = 7,
     ) -> None:
         if model is None:
             default_config = Path(__file__).parent / 'config' / 'default_network_config.yaml'
             with open(str(default_config), 'r') as f:
                 config = yaml.safe_load(f)
+            logging.info(
+                "Initializing default EveNet-Lite model from %s with global_input_dim=%d, sequential_input_dim=%d",
+                default_config,
+                global_input_dim,
+                sequential_input_dim,
+            )
             self.model = EveNetLite(
                 config=DotDict(config),
-                global_input_dim=10,
-                sequential_input_dim=7,
+                global_input_dim=global_input_dim,
+                sequential_input_dim=sequential_input_dim,
                 cls_label=class_labels
             )
         else:
@@ -74,7 +84,7 @@ class EvenetLiteClassifier:
         self.config.resume_from = resume_from
         self.config.checkpoint_every = checkpoint_every
 
-        self.trainer = Trainer(self.model, feature_names, self.config, callback_list)
+        self.trainer = Trainer(self.model, feature_names, self.config, callback_list, class_labels=self.class_labels)
         self.trainer.train(train_data, val_data, None, epochs, batch_size, sampler, epoch_size)
         norm_callback = next(cb for cb in self.trainer.callbacks if isinstance(cb, NormalizationCallback))
         self.normalizer = norm_callback.normalizer
@@ -109,7 +119,7 @@ class EvenetLiteClassifier:
         self.feature_names = feature_names
         if self.trainer is None:
             callbacks: List[Callback] = [NormalizationCallback()]
-            self.trainer = Trainer(self.model, feature_names, self.config, callbacks)
+            self.trainer = Trainer(self.model, feature_names, self.config, callbacks, class_labels=self.class_labels)
         self.trainer.restore_checkpoint(path, map_location=map_location)
         norm_callback = next((cb for cb in self.trainer.callbacks if isinstance(cb, NormalizationCallback)), None)
         if norm_callback is not None:
