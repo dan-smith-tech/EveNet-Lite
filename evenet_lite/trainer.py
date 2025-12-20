@@ -470,11 +470,8 @@ class Trainer:
         return base.with_name(filename)
 
     def _save_epoch_checkpoint(self, metrics: Dict[str, float], epoch: int) -> None:
-        saved_top_k = False
         if self.config.save_top_k > 0:
-            saved_top_k = self._maybe_save_best_checkpoint(metrics, epoch)
-
-        if saved_top_k:
+            self._maybe_save_best_checkpoint(metrics, epoch)
             return
 
         if (epoch + 1) % max(1, self.config.checkpoint_every) != 0:
