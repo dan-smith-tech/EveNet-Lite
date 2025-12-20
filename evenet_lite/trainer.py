@@ -390,15 +390,7 @@ class Trainer:
                 merged = {}
 
             if self.config.checkpoint_path and self.is_rank_zero():
-                if (epoch + 1) % max(1, self.config.checkpoint_every) == 0:
-                    extra = {"epoch": epoch}
-                    if self.scheduler:
-                        extra["scheduler"] = self.scheduler.state_dict()
-                    periodic_path = self._checkpoint_filename(Path(self.config.checkpoint_path), epoch, metric=None)
-                    self.save_checkpoint(str(periodic_path), extra)
-
-                if self.config.save_top_k > 0:
-                    self._maybe_save_best_checkpoint(merged, epoch)
+                self._save_epoch_checkpoint(merged, epoch)
 
             for cb in self.callbacks:
                 cb.on_epoch_end(self, epoch, merged)
@@ -477,13 +469,30 @@ class Trainer:
             return base / filename
         return base.with_name(filename)
 
-    def _maybe_save_best_checkpoint(self, metrics: Dict[str, float], epoch: int) -> None:
-        metric_value = self._extract_monitored_metric(metrics)
-        if metric_value is None or not self.config.checkpoint_path:
+    def _save_epoch_checkpoint(self, metrics: Dict[str, float], epoch: int) -> None:
+        saved_top_k = False
+        if self.config.save_top_k > 0:
+            saved_top_k = self._maybe_save_best_checkpoint(metrics, epoch)
+
+        if saved_top_k:
             return
 
-        if not self._should_replace_worst(metric_value):
+        if (epoch + 1) % max(1, self.config.checkpoint_every) != 0:
             return
+
+        extra = {"epoch": epoch}
+        if self.scheduler:
+            extra["scheduler"] = self.scheduler.state_dict()
+        periodic_path = self._checkpoint_filename(Path(self.config.checkpoint_path), epoch, metric=None)
+        self.save_checkpoint(str(periodic_path), extra)
+
+    def _maybe_save_best_checkpoint(self, metrics: Dict[str, float], epoch: int) -> bool:
+        metric_value = self._extract_monitored_metric(metrics)
+        if metric_value is None or not self.config.checkpoint_path:
+            return False
+
+        if not self._should_replace_worst(metric_value):
+            return False
 
         checkpoint_base = Path(self.config.checkpoint_path)
         checkpoint_path = self._checkpoint_filename(checkpoint_base, epoch, metric_value)
@@ -515,6 +524,8 @@ class Trainer:
                 worst_metric,
             )
             self._best_checkpoints = [(m, p) for m, p in self._best_checkpoints if (m, p) != (worst_metric, worst_path)]
+
+        return True
 
     def restore_checkpoint(self, path: str, map_location: Optional[str] = None) -> None:
         logging.info("Restoring checkpoint from %s", path)
