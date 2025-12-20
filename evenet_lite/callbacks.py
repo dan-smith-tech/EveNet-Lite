@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import logging
 import math
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -245,6 +246,7 @@ class NormalizationCallback(Callback):
         feature_names = trainer.feature_names
         self.normalizer.fit(train_data, feature_names)
         trainer.attach_normalizer(self.normalizer)
+        logging.info("Fitted normalizer with features: %s", {k: list(v) for k, v in feature_names.items()})
 
     def state_dict(self) -> Dict[str, Any]:
         return {"normalizer": self.normalizer.state_dict()}

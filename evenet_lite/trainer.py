@@ -410,6 +410,12 @@ class Trainer:
 
     def save_checkpoint(self, path: str, extra: Optional[Dict[str, Any]] = None) -> None:
         normalizer_state = self._current_normalizer_state()
+        logging.info(
+            "Saving checkpoint to %s (includes normalizer=%s, extra keys=%s)",
+            path,
+            normalizer_state is not None,
+            list((extra or {}).keys()),
+        )
         save_checkpoint(
             path,
             model_state=self.model.state_dict(),
@@ -467,6 +473,14 @@ class Trainer:
         if self.scheduler:
             extra["scheduler"] = self.scheduler.state_dict()
         self.save_checkpoint(str(checkpoint_path), extra)
+        logging.info(
+            "Saved top-k checkpoint at %s for %s=%.4f (k=%d/%d)",
+            checkpoint_path,
+            self.config.monitor_metric,
+            metric_value,
+            len(self._best_checkpoints) + 1,
+            self.config.save_top_k,
+        )
 
         self._best_checkpoints.append((metric_value, str(checkpoint_path)))
         if len(self._best_checkpoints) > self.config.save_top_k:
@@ -475,15 +489,23 @@ class Trainer:
                 Path(worst_path).unlink(missing_ok=True)
             except OSError:
                 pass
+            logging.info(
+                "Removed checkpoint %s to maintain top-k=%d (dropped metric %.4f)",
+                worst_path,
+                self.config.save_top_k,
+                worst_metric,
+            )
             self._best_checkpoints = [(m, p) for m, p in self._best_checkpoints if (m, p) != (worst_metric, worst_path)]
 
     def restore_checkpoint(self, path: str, map_location: Optional[str] = None) -> None:
+        logging.info("Restoring checkpoint from %s", path)
         checkpoint = load_checkpoint(path, map_location=map_location)
         self.model.load_state_dict(checkpoint["model"])
         if "optimizer" in checkpoint and hasattr(self, "optimizer"):
             self.optimizer.load_state_dict(checkpoint["optimizer"])
         if "normalizer" in checkpoint and checkpoint["normalizer"]:
             self.attach_normalizer_state(checkpoint["normalizer"])
+            logging.info("Restored normalizer state from checkpoint")
         if self.config.scheduler_fn and "extra" in checkpoint:
             scheduler_state = checkpoint["extra"].get("scheduler") if checkpoint.get("extra") else None
             if scheduler_state and self.scheduler:
