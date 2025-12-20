@@ -258,7 +258,7 @@ class Trainer:
         for batch_idx, (features, targets, weights) in enumerate(loader):
             features = {k: v.to(self.device) for k, v in features.items()}
             targets = targets.to(self.device)
-            weight_tensor = weights.to(self.device) if weights is not None else None
+            weight_tensor = weights.to(self.device) if not torch.any(torch.isinf(weights)) else None
 
             with torch.set_grad_enabled(training):
                 logits = self._forward(model, features)

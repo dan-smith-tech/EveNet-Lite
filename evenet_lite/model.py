@@ -117,13 +117,13 @@ class EveNetLite(nn.Module):
             num_attention_heads=cls_cfg.num_attention_heads,
         )
 
-    def forward(self, x: torch.Tensor, x_mask: torch.Tensor, glob: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, x_mask: torch.Tensor, globals: torch.Tensor) -> torch.Tensor:
         """Apply EveNet backbone and classification head."""
 
         input_point_cloud = x  # (B, N, D)
         B, _N, _D = input_point_cloud.shape
         input_point_cloud_mask = x_mask.unsqueeze(-1)  # (B, N, 1)
-        global_conditions = glob.unsqueeze(1)  # (B, 1, Dg)
+        global_conditions = globals.unsqueeze(1)  # (B, 1, Dg)
         global_conditions_mask = torch.ones((B, 1, 1), device=input_point_cloud.device)  # (B, 1, 1)
         time = torch.zeros((B,), device=input_point_cloud.device)
         full_attn_mask = None

@@ -43,7 +43,7 @@ class EvenetTensorDataset(Dataset):
             features = self.normalizer.transform({k: v.unsqueeze(0) for k, v in features.items()})
             features = {k: v.squeeze(0) for k, v in features.items()}
         label = self.labels[idx]
-        weight = self.sample_weights[idx] if self.sample_weights is not None else None
+        weight = self.sample_weights[idx] if self.sample_weights is not None else torch.tensor(torch.inf)
         return features, label, weight
 
 

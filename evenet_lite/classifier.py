@@ -1,29 +1,43 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
-
+import yaml
 import torch
+from evenet.control.global_config import DotDict
 
 from .callbacks import Callback, EvenetLiteNormalizer, NormalizationCallback
 from .data import EvenetTensorDataset
 from .trainer import Trainer, TrainerConfig
+from .model import EveNetLite
 
 
 class EvenetLiteClassifier:
     """High-level classifier API for Evenet-Lite."""
 
     def __init__(
-        self,
-        model: torch.nn.Module,
-        num_classes: int,
-        device: str = "auto",
-        lr: float = 1e-3,
-        weight_decay: float = 0.01,
-        grad_clip: Optional[float] = None,
-        scheduler_fn: Optional[callable] = None,
+            self,
+            class_labels: List[str],
+            device: str = "auto",
+            lr: float = 1e-3,
+            weight_decay: float = 0.01,
+            model: torch.nn.Module = None,
+            grad_clip: Optional[float] = None,
+            scheduler_fn: Optional[callable] = None,
     ) -> None:
-        self.model = model
-        self.num_classes = num_classes
+        if model is None:
+            default_config = Path(__file__).parent / 'config' / 'default_network_config.yaml'
+            with open(str(default_config), 'r') as f:
+                config = yaml.safe_load(f)
+            self.model = EveNetLite(
+                config=DotDict(config),
+                global_input_dim=10,
+                sequential_input_dim=7,
+                cls_label=class_labels
+            )
+        else:
+            self.model = model
+        self.class_labels = class_labels
         self.config = TrainerConfig(
             device=device,
             lr=lr,
@@ -36,18 +50,18 @@ class EvenetLiteClassifier:
         self.feature_names: Optional[Dict[str, Iterable[str]]] = None
 
     def fit(
-        self,
-        train_data: Tuple[Dict[str, torch.Tensor], torch.Tensor, Optional[torch.Tensor]],
-        val_data: Optional[Tuple[Dict[str, torch.Tensor], torch.Tensor, Optional[torch.Tensor]]] = None,
-        feature_names: Optional[Dict[str, Iterable[str]]] = None,
-        callbacks: Optional[List[Callback]] = None,
-        epochs: int = 10,
-        batch_size: int = 256,
-        sampler: Optional[str] = None,
-        epoch_size: Optional[int] = None,
-        checkpoint_path: Optional[str] = None,
-        resume_from: Optional[str] = None,
-        checkpoint_every: int = 1,
+            self,
+            train_data: Tuple[Dict[str, torch.Tensor], torch.Tensor, Optional[torch.Tensor]],
+            val_data: Optional[Tuple[Dict[str, torch.Tensor], torch.Tensor, Optional[torch.Tensor]]] = None,
+            feature_names: Optional[Dict[str, Iterable[str]]] = None,
+            callbacks: Optional[List[Callback]] = None,
+            epochs: int = 10,
+            batch_size: int = 256,
+            sampler: Optional[str] = None,
+            epoch_size: Optional[int] = None,
+            checkpoint_path: Optional[str] = None,
+            resume_from: Optional[str] = None,
+            checkpoint_every: int = 1,
     ) -> None:
         if feature_names is None:
             feature_names = {k: [] for k in train_data[0]}
@@ -72,11 +86,11 @@ class EvenetLiteClassifier:
         return self.trainer.predict(dataset, batch_size)
 
     def evaluate(
-        self,
-        X: Dict[str, torch.Tensor],
-        y: torch.Tensor,
-        weights: Optional[torch.Tensor] = None,
-        batch_size: int = 256,
+            self,
+            X: Dict[str, torch.Tensor],
+            y: torch.Tensor,
+            weights: Optional[torch.Tensor] = None,
+            batch_size: int = 256,
     ) -> Dict[str, float]:
         if self.trainer is None:
             raise RuntimeError("Model must be fitted before evaluation")
@@ -84,10 +98,10 @@ class EvenetLiteClassifier:
         return self.trainer.evaluate(dataset, batch_size)
 
     def load_checkpoint(
-        self,
-        path: str,
-        feature_names: Optional[Dict[str, Iterable[str]]] = None,
-        map_location: Optional[str] = None,
+            self,
+            path: str,
+            feature_names: Optional[Dict[str, Iterable[str]]] = None,
+            map_location: Optional[str] = None,
     ) -> None:
         feature_names = feature_names or self.feature_names
         if feature_names is None:
