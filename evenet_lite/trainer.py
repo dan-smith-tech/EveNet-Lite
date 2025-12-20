@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+import os
 
 import torch
 import torch.distributed as dist
@@ -10,6 +11,7 @@ from torch.utils.data import DataLoader, DistributedSampler
 
 from .callbacks import Callback, NormalizationCallback
 from .data import EvenetTensorDataset, build_sampler, DistributedWeightedSampler
+from .checkpoint import load_checkpoint, save_checkpoint
 from .metrics import compute_accuracy, compute_auc, compute_loss, summarize_metrics
 
 
@@ -21,6 +23,9 @@ class TrainerConfig:
     grad_clip: Optional[float] = None
     num_workers: int = 2
     scheduler_fn: Optional[Any] = None
+    checkpoint_path: Optional[str] = None
+    checkpoint_every: int = 1
+    resume_from: Optional[str] = None
 
 
 class Trainer:
@@ -35,6 +40,7 @@ class Trainer:
         self.feature_names = feature_names
         self.config = config
         self.callbacks: List[Callback] = callbacks or []
+        self._init_distributed()
         self.device = self._resolve_device(config.device)
 
         self.train_dataset: EvenetTensorDataset
@@ -43,6 +49,15 @@ class Trainer:
 
         self.optimizer: torch.optim.Optimizer
         self.scheduler: Optional[Any] = None
+
+    def _init_distributed(self) -> None:
+        if dist.is_available() and not dist.is_initialized():
+            world_size = int(os.environ.get("WORLD_SIZE", "1"))
+            if world_size > 1:
+                backend = "nccl" if torch.cuda.is_available() else "gloo"
+                dist.init_process_group(backend=backend, init_method="env://")
+        self.local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+        self.global_rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
 
     @property
     def rank(self) -> int:
@@ -61,15 +76,34 @@ class Trainer:
 
     def _resolve_device(self, device: str) -> torch.device:
         if device == "auto":
-            return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            if torch.cuda.is_available():
+                if dist.is_available() and dist.is_initialized():
+                    torch.cuda.set_device(self.local_rank)
+                    return torch.device(f"cuda:{self.local_rank}")
+                return torch.device("cuda")
+            return torch.device("cpu")
         return torch.device(device)
 
     def attach_normalizer(self, normalizer: Any) -> None:
-        self.train_dataset.set_normalizer(normalizer)
-        if self.val_dataset:
+        if hasattr(self, "train_dataset") and self.train_dataset is not None:
+            self.train_dataset.set_normalizer(normalizer)
+        if getattr(self, "val_dataset", None):
             self.val_dataset.set_normalizer(normalizer)
-        if self.test_dataset:
+        if getattr(self, "test_dataset", None):
             self.test_dataset.set_normalizer(normalizer)
+
+    def attach_normalizer_state(self, state: Dict[str, Any]) -> None:
+        for cb in self.callbacks:
+            if isinstance(cb, NormalizationCallback) and cb.normalizer is not None:
+                cb.normalizer.load_state_dict(state)
+                self.attach_normalizer(cb.normalizer)
+                break
+
+    def _current_normalizer_state(self) -> Optional[Dict[str, Any]]:
+        for cb in self.callbacks:
+            if isinstance(cb, NormalizationCallback) and cb.normalizer is not None:
+                return cb.normalizer.state_dict()
+        return None
 
     def setup_datasets(
         self,
@@ -84,7 +118,9 @@ class Trainer:
 
     def _maybe_wrap_ddp(self) -> torch.nn.Module:
         if self.world_size > 1:
-            return DDP(self.model.to(self.device), device_ids=[torch.cuda.current_device()])
+            if self.device.type == "cuda":
+                return DDP(self.model.to(self.device), device_ids=[self.device])
+            return DDP(self.model.to(self.device))
         return self.model.to(self.device)
 
     def train(
@@ -106,6 +142,9 @@ class Trainer:
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.config.lr, weight_decay=self.config.weight_decay)
         if self.config.scheduler_fn:
             self.scheduler = self.config.scheduler_fn(self.optimizer)
+
+        if self.config.resume_from:
+            self.restore_checkpoint(self.config.resume_from)
 
         for cb in self.callbacks:
             cb.on_train_start(self)
@@ -158,11 +197,41 @@ class Trainer:
                 merged.update({f"val_{k}": v for k, v in val_metrics.items()})
             else:
                 merged = {}
+
+            if self.config.checkpoint_path and self.is_rank_zero():
+                if (epoch + 1) % max(1, self.config.checkpoint_every) == 0:
+                    extra = {"epoch": epoch}
+                    if self.scheduler:
+                        extra["scheduler"] = self.scheduler.state_dict()
+                    self.save_checkpoint(self.config.checkpoint_path, extra)
+
             for cb in self.callbacks:
                 cb.on_epoch_end(self, epoch, merged)
 
         for cb in self.callbacks:
             cb.on_train_end(self)
+
+    def save_checkpoint(self, path: str, extra: Optional[Dict[str, Any]] = None) -> None:
+        normalizer_state = self._current_normalizer_state()
+        save_checkpoint(
+            path,
+            model_state=self.model.state_dict(),
+            optimizer_state=self.optimizer.state_dict(),
+            normalizer_state=normalizer_state,
+            extra=extra,
+        )
+
+    def restore_checkpoint(self, path: str, map_location: Optional[str] = None) -> None:
+        checkpoint = load_checkpoint(path, map_location=map_location)
+        self.model.load_state_dict(checkpoint["model"])
+        if "optimizer" in checkpoint and hasattr(self, "optimizer"):
+            self.optimizer.load_state_dict(checkpoint["optimizer"])
+        if "normalizer" in checkpoint and checkpoint["normalizer"]:
+            self.attach_normalizer_state(checkpoint["normalizer"])
+        if self.config.scheduler_fn and "extra" in checkpoint:
+            scheduler_state = checkpoint["extra"].get("scheduler") if checkpoint.get("extra") else None
+            if scheduler_state and self.scheduler:
+                self.scheduler.load_state_dict(scheduler_state)
 
     def _forward(self, model: torch.nn.Module, features: Dict[str, torch.Tensor]) -> torch.Tensor:
         try:

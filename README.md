@@ -92,11 +92,11 @@ Set `sampler="weighted"` in `fit` to enable the distributed-safe weighted sample
 
 ### Distributed training
 
-The trainer automatically detects `torch.distributed` initialization and wraps the model with `DistributedDataParallel`. Launch multi-GPU training with `torchrun` or `torch.distributed.launch`; logging and checkpointing occur only on rank 0.
+`Trainer` bootstraps DDP automatically when the standard `torchrun` environment variables are present (e.g., `LOCAL_RANK`, `WORLD_SIZE`). You can still call `.fit()` in a single process and it will transparently fall back to non-distributed execution. When using multiple GPUs, launch with `torchrun --nproc_per_node <num_gpus> your_script.py`; only rank 0 handles logging and checkpointing.
 
 ### Checkpointing
 
-Use `save_checkpoint` and `load_checkpoint` to persist or restore model, optimizer, scheduler, and callback state. These helpers are rank-safe and work with both single-GPU and DDP runs.
+Use `EvenetLiteClassifier.save_checkpoint` after `fit()` to persist model, optimizer, normalizer, and scheduler state. Restore weights for inference (or to resume training) via `EvenetLiteClassifier.load_checkpoint`, providing `feature_names` if the classifier has not been fitted yet. The underlying checkpoint helpers remain rank-safe and work with both single-GPU and DDP runs.
 
 ### Hugging Face weight loading
 
