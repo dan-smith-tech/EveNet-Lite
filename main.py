@@ -1,43 +1,9 @@
-import argparse
 import logging
 
+from evenet_lite import EvenetLiteClassifier
 import torch
 
-from evenet_lite import EvenetLiteClassifier
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train EveNet-Lite with optional pretrained weights.")
-    parser.add_argument(
-        "--pretrained",
-        choices=["none", "hf", "local"],
-        default="none",
-        help="Select pretrained weight source. 'hf' pulls from Hugging Face via hf_utils; 'local' loads a checkpoint path.",
-    )
-    parser.add_argument(
-        "--pretrained-path",
-        default=None,
-        help="Path to a local checkpoint when --pretrained local is selected.",
-    )
-    parser.add_argument(
-        "--pretrained-repo-id",
-        default="Evenet-Lite/evenet-lite",
-        help="Hugging Face repo id used when --pretrained hf is selected.",
-    )
-    parser.add_argument(
-        "--pretrained-filename",
-        default="model.pt",
-        help="Filename inside the Hugging Face repo to download when --pretrained hf is selected.",
-    )
-    parser.add_argument(
-        "--pretrained-cache-dir",
-        default=None,
-        help="Optional cache directory for Hugging Face downloads.",
-    )
-    return parser.parse_args()
-
-def main() -> None:
-    args = parse_args()
+if __name__ == '__main__':
     train_data = {
         'sig': torch.load(
             "workspace/data/46915_NMSSM_XToYHTo2B2Tau_MX-600_MY-300_TuneCP5_13TeV-madgraph-pythia8_RunIISummer20UL16NanoAODv9-106X_mcRun2_asymptotic_v17-v1_NANOAODSIM/evenet/train/skim_32F37BC4-BDDF-BF4F-91ED-3CF4F049586E.pt"),
@@ -88,13 +54,7 @@ def main() -> None:
         wandb={
             'project': 'EvenetLite',
             'name': 'test',
-        },
-        pretrained=args.pretrained != "none",
-        pretrained_source=args.pretrained if args.pretrained != "none" else "hf",
-        pretrained_path=args.pretrained_path,
-        pretrained_repo_id=args.pretrained_repo_id,
-        pretrained_filename=args.pretrained_filename,
-        pretrained_cache_dir=args.pretrained_cache_dir,
+        }
     )
 
     clf.fit(
@@ -137,5 +97,4 @@ def main() -> None:
     # probs = clf.predict(X_test, batch_size=256)
     # metrics = clf.evaluate(X_test, y_test, w_test, batch_size=256)
 
-if __name__ == '__main__':
-    main()
+
