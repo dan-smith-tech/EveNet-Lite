@@ -49,6 +49,7 @@ if __name__ == '__main__':
         warmup_epochs=1,
         warmup_ratio=0.1,
         warmup_start_factor=0.1,
+        pretrained=True,
         log_level=logging.INFO,
         use_wandb=True,
         wandb={
@@ -62,9 +63,9 @@ if __name__ == '__main__':
         val_data=(X_val, y_val, None),
         callbacks=[],  # custom callbacks optional; normalization auto-injected
         epochs=10,
-        batch_size=256,
+        batch_size=128,
         sampler="weighted",  # or None
-        epoch_size=1280, # or None,
+        epoch_size=640, # or None,
         save_top_k=2,
         checkpoint_every=1,
         # checkpoint_path="./checkpoint",

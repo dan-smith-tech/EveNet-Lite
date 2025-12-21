@@ -33,7 +33,10 @@ cmd="python train_multi_gpu.py \\
   --pretrained \\
   --pretrained-path \"/global/cfs/cdirs/m5019/avencast/Checkpoints/checkpoints.20M.ablation.4.newcls/epoch=29_train=2.4809_val=2.5040.ckpt\" \\
   --pretrained-source local \\
-  --debug"
+  --eval-sig \"${VAL_SIG}\" \\
+  --eval-bkg \"${VAL_BKG}\" \\
+  --eval-output \"./eval_output\" \\
+  "
 
 set -x
 srun -l shifter \
