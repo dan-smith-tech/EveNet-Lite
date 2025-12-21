@@ -25,6 +25,7 @@ class EvenetTensorDataset(Dataset):
         labels: torch.Tensor,
         sample_weights: Optional[torch.Tensor] = None,
         normalizer: Optional[EvenetLiteNormalizer] = None,
+        include_indices: bool = False,
     ) -> None:
         self.raw_features = {}
         for name, tensor in features.items():
@@ -38,6 +39,7 @@ class EvenetTensorDataset(Dataset):
             torch.as_tensor(sample_weights, dtype=torch.float32) if sample_weights is not None else None
         )
         self.normalizer = normalizer
+        self.include_indices = include_indices
 
     def set_normalizer(self, normalizer: EvenetLiteNormalizer) -> None:
         self.normalizer = normalizer
@@ -52,6 +54,8 @@ class EvenetTensorDataset(Dataset):
             features = {k: v.squeeze(0) for k, v in features.items()}
         label = self.labels[idx]
         weight = self.sample_weights[idx] if self.sample_weights is not None else torch.tensor(torch.inf, dtype=torch.float32)
+        if self.include_indices:
+            return features, label, weight, torch.tensor(idx, dtype=torch.long)
         return features, label, weight
 
 

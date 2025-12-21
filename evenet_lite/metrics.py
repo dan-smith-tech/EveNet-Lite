@@ -132,6 +132,7 @@ def calculate_physics_metrics(
     targets: np.ndarray,
     weights: np.ndarray,
     bins: int = 1000,
+    min_bkg_events: int = 100,
 ) -> Dict[str, np.ndarray]:
     """Calculates AUC and Max SIC with statistical uncertainty."""
 
@@ -142,7 +143,9 @@ def calculate_physics_metrics(
 
     edges = np.linspace(0, 1, bins + 1)
 
-    max_sic, max_sic_unc, sic, sic_unc = compute_sic_from_scores(targets, scores, weights, edges, min_bkg_events=100)
+    max_sic, max_sic_unc, sic, sic_unc = compute_sic_from_scores(
+        targets, scores, weights, edges, min_bkg_events=min_bkg_events
+    )
 
     try:
         auc_val = roc_auc_score(targets, scores, sample_weight=weights)

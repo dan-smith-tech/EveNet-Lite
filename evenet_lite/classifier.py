@@ -180,6 +180,13 @@ class EvenetLiteClassifier:
             save_top_k: int = 0,
             monitor_metric: str = "val_loss",
             minimize_metric: bool = True,
+            early_stop_metric: str = "val_loss",
+            early_stop_patience: int = 0,
+            early_stop_minimize: bool = True,
+            eval_data: Optional[Tuple[Dict[str, torch.Tensor], torch.Tensor, Optional[torch.Tensor]]] = None,
+            eval_output_path: Optional[str] = None,
+            eval_batch_size: Optional[int] = None,
+            sic_min_bkg_events: int = 100,
             debug: bool = False,
     ) -> None:
         if feature_names is None:
@@ -204,12 +211,18 @@ class EvenetLiteClassifier:
         self.config.save_top_k = save_top_k
         self.config.monitor_metric = monitor_metric
         self.config.minimize_metric = minimize_metric
+        self.config.early_stop_metric = early_stop_metric
+        self.config.early_stop_patience = early_stop_patience
+        self.config.early_stop_minimize = early_stop_minimize
+        self.config.eval_output_path = eval_output_path
+        self.config.eval_batch_size = eval_batch_size
+        self.config.sic_min_bkg_events = sic_min_bkg_events
 
         self.debug = debug
         self.trainer = Trainer(
             self.model, feature_names, self.config, callback_list, class_labels=self.class_labels, debug=debug
         )
-        self.trainer.train(train_data, val_data, None, epochs, batch_size, sampler, epoch_size)
+        self.trainer.train(train_data, val_data, eval_data, epochs, batch_size, sampler, epoch_size)
         norm_callback = next(cb for cb in self.trainer.callbacks if isinstance(cb, NormalizationCallback))
         self.normalizer = norm_callback.normalizer
 

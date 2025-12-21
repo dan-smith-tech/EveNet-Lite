@@ -78,6 +78,18 @@ def parse_args() -> argparse.Namespace:
         default=True,
         help="Whether the monitor metric should be minimized",
     )
+    parser.add_argument("--early-stop-metric", type=str, default="val_loss", help="Metric used for early stopping")
+    parser.add_argument("--early-stop-patience", type=int, default=0, help="Epochs to wait before early stopping")
+    parser.add_argument(
+        "--early-stop-minimize",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Whether the early stop metric should be minimized",
+    )
+    parser.add_argument("--eval-sig", type=str, help="Optional path or glob pattern to signal evaluation tensor (.pt)")
+    parser.add_argument("--eval-bkg", type=str, help="Optional path or glob pattern to background evaluation tensor (.pt)")
+    parser.add_argument("--eval-output", type=Path, help="Path to save evaluation predictions")
+    parser.add_argument("--eval-batch-size", type=int, help="Optional batch size override for evaluation")
     parser.add_argument("--debug", action="store_true", help="Enable verbose DebugCallback logs")
     parser.add_argument(
         "--log-level",
@@ -125,6 +137,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-lr", type=float, default=0.0, help="Minimum learning rate for scheduler")
     parser.add_argument("--global-input-dim", type=int, default=10, help="Number of global features")
     parser.add_argument("--sequential-input-dim", type=int, default=7, help="Number of sequential features per object")
+    parser.add_argument("--sic-min-bkg-events", type=int, default=100, help="Minimum background events for SIC")
     parser.add_argument(
         "--use-wandb",
         action=argparse.BooleanOptionalAction,
@@ -196,6 +209,14 @@ def main() -> None:
             _resolve_paths(args.val_bkg, "validation background"),
         )
 
+    eval_features = None
+    eval_labels = None
+    if args.eval_sig and args.eval_bkg:
+        eval_features, eval_labels = _load_split(
+            _resolve_paths(args.eval_sig, "evaluation signal"),
+            _resolve_paths(args.eval_bkg, "evaluation background"),
+        )
+
 
     classifier_config = dict(
         device=args.device,
@@ -245,6 +266,14 @@ def main() -> None:
         save_top_k=args.save_top_k,
         monitor_metric=args.monitor_metric,
         minimize_metric=args.minimize_metric,
+        early_stop_metric=args.early_stop_metric,
+        early_stop_minimize=args.early_stop_minimize,
+        early_stop_patience=args.early_stop_patience,
+        eval_features=eval_features,
+        eval_labels=eval_labels,
+        eval_output_path=str(args.eval_output) if args.eval_output else None,
+        eval_batch_size=args.eval_batch_size,
+        sic_min_bkg_events=args.sic_min_bkg_events,
         debug=args.debug,
         log_level=log_level,
         **classifier_config

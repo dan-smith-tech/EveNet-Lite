@@ -51,9 +51,15 @@ class TrainerConfig:
     wandb: Optional[Dict[str, Any]] = None
     compute_physics_metrics: bool = True
     physics_bins: int = 1000
+    sic_min_bkg_events: int = 100
+    eval_batch_size: Optional[int] = None
+    eval_output_path: Optional[str] = None
     save_top_k: int = 0
     monitor_metric: str = "val_loss"
     minimize_metric: bool = True
+    early_stop_metric: str = "val_loss"
+    early_stop_minimize: bool = True
+    early_stop_patience: int = 0
     find_unused_parameters: bool = True
 
     def __post_init__(self) -> None:
@@ -439,6 +445,9 @@ class Trainer:
 
             self._log_training_overview(train_loader, val_loader, sampler_obj, val_sampler, epochs)
 
+            best_metric: Optional[float] = None
+            epochs_since_improve = 0
+
             for epoch in range(epochs):
                 if isinstance(sampler_obj, (DistributedSampler, DistributedWeightedSampler)):
                     sampler_obj.set_epoch(epoch)
@@ -473,8 +482,49 @@ class Trainer:
                 for cb in self.callbacks:
                     cb.on_epoch_end(self, epoch, merged)
 
+                stop_training = False
+                if self.config.early_stop_patience > 0 and self.is_rank_zero():
+                    metric_value = merged.get(self.config.early_stop_metric)
+                    if metric_value is not None:
+                        improved = False
+                        if best_metric is None:
+                            improved = True
+                        elif self.config.early_stop_minimize:
+                            improved = metric_value < best_metric
+                        else:
+                            improved = metric_value > best_metric
+
+                        if improved:
+                            best_metric = metric_value
+                            epochs_since_improve = 0
+                        else:
+                            epochs_since_improve += 1
+                            if epochs_since_improve >= self.config.early_stop_patience:
+                                stop_training = True
+
+                stop_tensor = torch.tensor(1 if stop_training else 0, device=self.device)
+                if self.world_size > 1:
+                    dist.broadcast(stop_tensor, src=0)
+                if stop_tensor.item() == 1:
+                    logging.info(
+                        "Early stopping triggered after %d epochs without improvement on %s",
+                        self.config.early_stop_patience,
+                        self.config.early_stop_metric,
+                    )
+                    break
+
             for cb in self.callbacks:
                 cb.on_train_end(self)
+
+            if self.test_dataset is not None:
+                eval_batch_size = self.config.eval_batch_size or batch_size
+                eval_metrics = self.evaluate(
+                    self.test_dataset,
+                    batch_size=eval_batch_size,
+                    output_path=self.config.eval_output_path,
+                )
+                if self.is_rank_zero():
+                    logging.info("Evaluation metrics: %s", eval_metrics)
         finally:
             self._finalize_training()
 
@@ -848,6 +898,7 @@ class Trainer:
             targets=targets.cpu().numpy(),
             weights=weights.cpu().numpy(),
             bins=self.config.physics_bins,
+            min_bkg_events=self.config.sic_min_bkg_events,
         )
         return {"auc": metrics["auc"], "max_sic": metrics["max_sic"], "max_sic_unc": metrics["max_sic_unc"]}
 
@@ -867,62 +918,106 @@ class Trainer:
                 msg_parts.append(f"{key}={metrics[key]:.4f}")
         logging.info(" | ".join(msg_parts))
 
-    def predict(self, dataset: EvenetTensorDataset, batch_size: int = 256) -> torch.Tensor:
-        loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=self.config.num_workers)
+    def _collect_predictions(
+        self, dataset: EvenetTensorDataset, batch_size: int = 256
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        original_flag = getattr(dataset, "include_indices", False)
+        dataset.include_indices = True
+
+        sampler = DistributedSampler(dataset, shuffle=False) if self.world_size > 1 else None
+        loader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            sampler=sampler,
+            shuffle=sampler is None,
+            num_workers=self.config.num_workers,
+        )
+
         self.model.to(self.device)
         self.model.eval()
-        outputs: List[torch.Tensor] = []
+        local_outputs: List[torch.Tensor] = []
+        local_indices: List[torch.Tensor] = []
+
         with torch.no_grad():
-            for features, _, _ in loader:
+            for batch in loader:
+                features, _, _, *maybe_idx = batch
+                batch_indices = maybe_idx[0] if maybe_idx else None
                 features = self._prepare_features(features)
-                outputs.append(self._forward(self.model, features).cpu())
-        return torch.cat(outputs, dim=0)
+                outputs = self._forward(self.model, features).detach().cpu()
+                local_outputs.append(outputs)
+                if batch_indices is not None:
+                    local_indices.append(batch_indices.cpu())
+
+        dataset.include_indices = original_flag
+
+        preds_tensor = torch.cat(local_outputs, dim=0) if local_outputs else torch.empty((0,))
+        index_tensor = torch.cat(local_indices, dim=0) if local_indices else torch.empty((0,), dtype=torch.long)
+
+        if self.world_size > 1:
+            gathered_indices: List[Optional[torch.Tensor]] = [None for _ in range(self.world_size)]
+            gathered_preds: List[Optional[torch.Tensor]] = [None for _ in range(self.world_size)]
+            dist.all_gather_object(gathered_indices, index_tensor)
+            dist.all_gather_object(gathered_preds, preds_tensor)
+
+            index_tensor = torch.cat([g for g in gathered_indices if g is not None], dim=0)
+            preds_tensor = torch.cat([g for g in gathered_preds if g is not None], dim=0)
+
+            if index_tensor.numel() > 0:
+                order = torch.argsort(index_tensor)
+                index_tensor = index_tensor[order]
+                preds_tensor = preds_tensor[order]
+
+        return preds_tensor, index_tensor
+
+    def predict(self, dataset: EvenetTensorDataset, batch_size: int = 256) -> torch.Tensor:
+        preds, _ = self._collect_predictions(dataset, batch_size)
+        return preds
 
     def evaluate(
         self,
         dataset: EvenetTensorDataset,
         batch_size: int = 256,
+        output_path: Optional[str] = None,
     ) -> Dict[str, float]:
-        loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=self.config.num_workers)
-        self.model.to(self.device)
-        self.model.eval()
-        metric_sum: Dict[str, float] = {"loss": 0.0, "accuracy": 0.0}
-        metric_count: Dict[str, int] = {"loss": 0, "accuracy": 0}
-        probs_accum: List[torch.Tensor] = []
-        targets_accum: List[torch.Tensor] = []
-        weights_accum: List[torch.Tensor] = []
-        with torch.no_grad():
-            for features, targets, weights in loader:
-                features = self._prepare_features(features)
-                targets = targets.long().to(self.device)
-                weight_tensor = weights.to(self.device) if weights is not None else None
-                if weight_tensor is not None and torch.any(torch.isinf(weight_tensor)):
-                    weight_tensor = None
+        preds, indices = self._collect_predictions(dataset, batch_size)
 
-                outputs = self._forward(self.model, features)
-                loss = compute_loss(outputs, targets, weight_tensor)
-                metric_sum["loss"] += loss.item() * targets.size(0)
-                metric_count["loss"] += targets.size(0)
+        if not self.is_rank_zero():
+            return {}
 
-                acc = compute_accuracy(outputs, targets)
-                metric_sum["accuracy"] += acc * targets.size(0)
-                metric_count["accuracy"] += targets.size(0)
+        labels = dataset.labels[indices] if indices.numel() > 0 else dataset.labels
+        weights = dataset.sample_weights[indices] if dataset.sample_weights is not None and indices.numel() > 0 else dataset.sample_weights
 
-                if self.config.compute_physics_metrics:
-                    probs_accum.append(outputs.cpu())
-                    targets_accum.append(targets.cpu())
-                    weights_accum.append(
-                        torch.ones_like(targets, dtype=torch.float32)
-                        if weight_tensor is None
-                        else weight_tensor.detach().cpu()
-                    )
-        metrics = summarize_metrics(metric_sum, metric_count)
-        if self.config.compute_physics_metrics and probs_accum:
+        valid_weight_tensor = None
+        if weights is not None:
+            finite_mask = torch.isfinite(weights)
+            valid_weight_tensor = weights if torch.all(finite_mask) else None
+
+        loss = compute_loss(preds, labels, valid_weight_tensor)
+        accuracy = compute_accuracy(preds, labels)
+        metrics: Dict[str, float] = {"loss": float(loss.item()), "accuracy": float(accuracy)}
+
+        if self.config.compute_physics_metrics and preds.numel() > 0:
             metrics.update(
-                self._compute_epoch_physics_metrics(
-                    [p.to(self.device) for p in probs_accum],
-                    [t.to(self.device) for t in targets_accum],
-                    [w.to(self.device) for w in weights_accum],
+                calculate_physics_metrics(
+                    probs=preds.numpy(),
+                    targets=labels.numpy(),
+                    weights=(
+                        weights.numpy()
+                        if weights is not None
+                        else torch.ones_like(labels, dtype=torch.float32).numpy()
+                    ),
+                    bins=self.config.physics_bins,
+                    min_bkg_events=self.config.sic_min_bkg_events,
                 )
             )
+
+        if output_path:
+            payload: Dict[str, torch.Tensor] = {k: v.cpu() for k, v in dataset.raw_features.items()}
+            payload["predictions"] = preds
+            payload["labels"] = labels
+            if weights is not None:
+                payload["sample_weights"] = weights
+            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+            torch.save(payload, output_path)
+
         return metrics
