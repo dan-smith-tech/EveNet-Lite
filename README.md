@@ -140,6 +140,12 @@ Set `sampler="weighted"` in `fit` to enable the distributed-safe weighted sample
 
 `Trainer` bootstraps DDP automatically when the standard `torchrun` environment variables are present (e.g., `LOCAL_RANK`, `WORLD_SIZE`). You can still call `.fit()` in a single process and it will transparently fall back to non-distributed execution. When using multiple GPUs, launch with `torchrun --nproc_per_node <num_gpus> your_script.py`; only rank 0 handles logging and checkpointing.
 
+For NERSC (SLURM) runs, the `NERSC/` directory includes ready-to-tweak scripts:
+
+1. Edit `NERSC/submit_evenet_lite.slurm` to point `TRAIN_SIG`, `TRAIN_BKG`, `VAL_SIG`, `VAL_BKG`, and `CHECKPOINT_DIR` at your tensors (paths should resolve inside the container or shared filesystem). Adjust `#SBATCH` settings as needed.
+2. Submit with `sbatch NERSC/submit_evenet_lite.slurm`. The job uses `srun` + `shifter`, sets `MASTER_ADDR` from the first host in the allocation, and exports the DDP environment variables expected by PyTorch via `NERSC/export_DDP_vars.sh`.
+3. The SLURM script invokes `NERSC/train_multi_gpu.py`, which wraps `run_evenet_lite_training` with CLI flags for epochs, batch size, sampler choice, checkpointing, logging verbosity, and the `--debug` toggle.
+
 ### Checkpointing
 
 Use `EvenetLiteClassifier.save_checkpoint` after `fit()` to persist model, optimizer, normalizer, and scheduler state. Restore weights for inference (or to resume training) via `EvenetLiteClassifier.load_checkpoint`, providing `feature_names` if the classifier has not been fitted yet. The underlying checkpoint helpers remain rank-safe and work with both single-GPU and DDP runs.
