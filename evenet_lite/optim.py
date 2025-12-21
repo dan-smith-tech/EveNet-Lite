@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any, Callable, Iterable, List, Tuple
 
 import torch
@@ -87,20 +88,32 @@ def default_scheduler_builder(
     cosine_iters = max(1, cosine_epochs * steps_per_epoch) if steps_per_epoch else max(1, cosine_epochs)
 
     def _builder(optimizer: torch.optim.Optimizer, tag: str = "head") -> Any:
-        cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=cosine_iters, eta_min=config.min_lr
-        )
-        if warmup_iters <= 0:
-            return cosine
+        base_lrs = [group["lr"] for group in optimizer.param_groups]
+        min_lr = config.min_lr
 
-        warmup = torch.optim.lr_scheduler.LinearLR(
-            optimizer,
-            start_factor=config.warmup_start_factor,
-            total_iters=warmup_iters,
-        )
-        return torch.optim.lr_scheduler.SequentialLR(
-            optimizer, schedulers=[warmup, cosine], milestones=[warmup_iters]
-        )
+        def _make_lambda(base_lr: float) -> Callable[[int], float]:
+            min_lr_ratio = min_lr / base_lr if base_lr > 0 else 0.0
+            min_lr_ratio = min(min_lr_ratio, 1.0)
+
+            def lr_lambda(step: int) -> float:
+                if warmup_iters + cosine_iters <= 0:
+                    return 1.0
+
+                step_clamped = min(step, warmup_iters + cosine_iters)
+                if warmup_iters > 0 and step_clamped < warmup_iters:
+                    return config.warmup_start_factor + (
+                        (1 - config.warmup_start_factor)
+                        * (step_clamped / max(1, warmup_iters))
+                    )
+
+                progress = (step_clamped - warmup_iters) / max(1, cosine_iters)
+                cosine_decay = 0.5 * (1 + math.cos(math.pi * progress))
+                return min_lr_ratio + (1 - min_lr_ratio) * cosine_decay
+
+            return lr_lambda
+
+        lambda_fns = [_make_lambda(base_lr) for base_lr in base_lrs]
+        return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda_fns)
 
     return _builder
 
