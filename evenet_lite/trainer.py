@@ -990,6 +990,11 @@ class Trainer:
 
         labels = dataset.labels[indices] if indices.numel() > 0 else dataset.labels
         weights = dataset.sample_weights[indices] if dataset.sample_weights is not None and indices.numel() > 0 else dataset.sample_weights
+        raw_features = (
+            {name: tensor[indices] for name, tensor in dataset.raw_features.items()}
+            if indices.numel() > 0
+            else dataset.raw_features
+        )
 
         valid_weight_tensor = None
         if weights is not None:
@@ -1023,7 +1028,7 @@ class Trainer:
                 preds=preds,
                 labels=labels,
                 weights=weights,
-                raw_features=dataset.raw_features,
+                raw_features=raw_features,
                 metrics=metrics,
             )
 
@@ -1063,6 +1068,13 @@ class Trainer:
         labels_np = labels.cpu().numpy()
         weights_np = weights.cpu().numpy() if weights is not None else None
         features_np = {k: v.cpu().numpy() for k, v in raw_features.items()}
+
+        expected_len = labels_np.shape[0]
+        for name, arr in features_np.items():
+            if arr.shape[0] != expected_len:
+                raise ValueError(
+                    f"Feature '{name}' has length {arr.shape[0]} but expected {expected_len} to match labels"
+                )
 
         metric_arrays = {f"metric_{k}": np.array(v, dtype=np.float32) for k, v in metrics.items()}
 
