@@ -21,6 +21,9 @@ from .trainer import Trainer, TrainerConfig
 class EvenetLiteClassifier:
     """High-level classifier API for Evenet-Lite."""
 
+    DEFAULT_HF_REPO_ID="Avencast/EveNet"
+    DEFAULT_HF_REPO_FILENAME="checkpoints.20M.a4.last.ckpt"
+
     DEFAULT_FEATURE_NAMES = {
         "x": [
             "energy",
@@ -95,8 +98,8 @@ class EvenetLiteClassifier:
             pretrained: bool = False,
             pretrained_source: str = "hf",
             pretrained_path: Optional[str] = None,
-            pretrained_repo_id: Optional[str] = None,
-            pretrained_filename: Optional[str] = None,
+            pretrained_repo_id: Optional[str] = DEFAULT_HF_REPO_ID,
+            pretrained_filename: Optional[str] = DEFAULT_HF_REPO_FILENAME,
             pretrained_cache_dir: Optional[str] = None,
     ) -> None:
         root_logger = logging.getLogger()
