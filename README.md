@@ -142,7 +142,7 @@ Set `sampler="weighted"` in `fit` to enable the distributed-safe weighted sample
 
 For NERSC (SLURM) runs, the `NERSC/` directory includes ready-to-tweak scripts:
 
-1. Edit `NERSC/submit_evenet_lite.slurm` to point `TRAIN_SIG`, `TRAIN_BKG`, `VAL_SIG`, `VAL_BKG`, and `CHECKPOINT_DIR` at your tensors (paths or glob patterns should resolve inside the container or shared filesystem). Adjust `#SBATCH` settings as needed. Wildcards like `NMSSM_*300*/evenet/train/*.pt` are supported—keep them quoted so they reach Python unchanged.
+1. Edit `NERSC/submit_evenet_lite.slurm` to point `TRAIN_SIG`, `TRAIN_BKG`, `VAL_SIG`, `VAL_BKG`, and `CHECKPOINT_DIR` at your tensors (paths or glob patterns should resolve inside the container or shared filesystem). Adjust `#SBATCH` settings as needed. Wildcards like `NMSSM_*300*/evenet/train/*.pt` are supported—keep them quoted so they reach Python unchanged; all matching files are loaded and concatenated.
 2. Submit with `sbatch NERSC/submit_evenet_lite.slurm`. The job uses `srun` + `shifter`, sets `MASTER_ADDR` from the first host in the allocation, and exports the DDP environment variables expected by PyTorch via `NERSC/export_DDP_vars.sh`.
 3. The SLURM script invokes `NERSC/train_multi_gpu.py`, which wraps `run_evenet_lite_training` with CLI flags for epochs, batch size, sampler choice, checkpointing, logging verbosity, and the `--debug` toggle.
 

@@ -2,7 +2,7 @@ import argparse
 import logging
 from glob import glob
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, Iterable, List, Tuple
 
 import torch
 
@@ -15,35 +15,40 @@ FeatureBundle = Tuple[Dict[str, torch.Tensor], torch.Tensor]
 logger = logging.getLogger(__name__)
 
 
-def _resolve_path(path_str: str, description: str) -> Path:
-    """Resolve a concrete file from a path or glob pattern."""
+def _resolve_paths(path_str: str, description: str) -> List[Path]:
+    """Resolve one or more concrete files from a path or glob pattern."""
 
     candidate = Path(path_str)
     if candidate.is_file():
-        return candidate
+        return [candidate]
 
     matches = sorted(Path(p) for p in glob(path_str))
     if not matches:
         raise FileNotFoundError(f"No files matched {description} pattern: {path_str}")
 
-    if len(matches) > 1:
-        logger.info("%s pattern matched %d files; using first: %s", description, len(matches), matches[0])
-
-    return matches[0]
+    logger.info("%s pattern matched %d files: %s", description, len(matches), ", ".join(str(m) for m in matches))
+    return matches
 
 
-def _load_split(sig_path: Path, bkg_path: Path) -> FeatureBundle:
-    sig_data = torch.load(sig_path)
-    bkg_data = torch.load(bkg_path)
+def _concat_tensors(data_iter: Iterable[torch.Tensor]) -> torch.Tensor:
+    return torch.cat(list(data_iter), dim=0)
+
+
+def _load_split(sig_paths: List[Path], bkg_paths: List[Path]) -> FeatureBundle:
+    sig_parts = [torch.load(p) for p in sig_paths]
+    bkg_parts = [torch.load(p) for p in bkg_paths]
 
     features = {
-        ("globals" if key == "global" else key): torch.cat([sig_data[key], bkg_data[key]], dim=0)
+        ("globals" if key == "global" else key): _concat_tensors(
+            [*(part[key] for part in sig_parts), *(part[key] for part in bkg_parts)]
+        )
         for key in ["x", "x_mask", "global"]
     }
+
     labels = torch.cat(
         [
-            torch.ones(len(sig_data["x"]), device=features["x"].device),
-            torch.zeros(len(bkg_data["x"]), device=features["x"].device),
+            torch.ones(sum(len(part["x"]) for part in sig_parts), device=features["x"].device),
+            torch.zeros(sum(len(part["x"]) for part in bkg_parts), device=features["x"].device),
         ],
         dim=0,
     )
@@ -79,16 +84,16 @@ def main() -> None:
     log_level = getattr(logging, args.log_level.upper())
 
     (train_features, train_labels) = _load_split(
-        _resolve_path(args.train_sig, "train signal"),
-        _resolve_path(args.train_bkg, "train background"),
+        _resolve_paths(args.train_sig, "train signal"),
+        _resolve_paths(args.train_bkg, "train background"),
     )
 
     val_features = None
     val_labels = None
     if args.val_sig and args.val_bkg:
         val_features, val_labels = _load_split(
-            _resolve_path(args.val_sig, "validation signal"),
-            _resolve_path(args.val_bkg, "validation background"),
+            _resolve_paths(args.val_sig, "validation signal"),
+            _resolve_paths(args.val_bkg, "validation background"),
         )
 
     run_evenet_lite_training(
