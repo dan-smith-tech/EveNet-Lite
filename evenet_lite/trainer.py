@@ -54,6 +54,7 @@ class TrainerConfig:
     save_top_k: int = 0
     monitor_metric: str = "val_loss"
     minimize_metric: bool = True
+    find_unused_parameters: bool = True
 
     def __post_init__(self) -> None:
         if self.head_lr is None:
@@ -268,9 +269,13 @@ class Trainer:
         if self.world_size > 1:
             if self.device.type == "cuda":
                 device_id = self.device.index if self.device.index is not None else self.local_rank
-                model = DDP(model, device_ids=[device_id])
+                model = DDP(
+                    model,
+                    device_ids=[device_id],
+                    find_unused_parameters=self.config.find_unused_parameters,
+                )
             else:
-                model = DDP(model)
+                model = DDP(model, find_unused_parameters=self.config.find_unused_parameters)
         return model
 
     def _unwrap_model(self) -> torch.nn.Module:

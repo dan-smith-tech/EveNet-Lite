@@ -138,7 +138,7 @@ Set `sampler="weighted"` in `fit` to enable the distributed-safe weighted sample
 
 ### Distributed training
 
-`Trainer` bootstraps DDP automatically when the standard `torchrun` environment variables are present (e.g., `LOCAL_RANK`, `WORLD_SIZE`). You can still call `.fit()` in a single process and it will transparently fall back to non-distributed execution. When using multiple GPUs, launch with `torchrun --nproc_per_node <num_gpus> your_script.py`; only rank 0 handles logging and checkpointing.
+`Trainer` bootstraps DDP automatically when the standard `torchrun` environment variables are present (e.g., `LOCAL_RANK`, `WORLD_SIZE`). You can still call `.fit()` in a single process and it will transparently fall back to non-distributed execution. When using multiple GPUs, launch with `torchrun --nproc_per_node <num_gpus> your_script.py`; only rank 0 handles logging and checkpointing. DDP is initialized with `find_unused_parameters=True` by default to accommodate optional EveNet submodules; override the flag in `TrainerConfig` if you want to opt out.
 
 For NERSC (SLURM) runs, the `NERSC/` directory includes ready-to-tweak scripts:
 
