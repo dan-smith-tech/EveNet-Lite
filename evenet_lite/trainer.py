@@ -971,6 +971,11 @@ class Trainer:
                 index_tensor = index_tensor[order]
                 preds_tensor = preds_tensor[order]
 
+                # Remove any duplicated indices introduced by DistributedSampler padding
+                unique_indices, unique_positions = torch.unique_consecutive(index_tensor, return_index=True)
+                index_tensor = unique_indices
+                preds_tensor = preds_tensor[unique_positions]
+
         return preds_tensor, index_tensor
 
     def predict(self, dataset: EvenetTensorDataset, batch_size: int = 256) -> torch.Tensor:
