@@ -15,16 +15,34 @@ from .callbacks import Callback, NormalizationCallback
 from .data import EvenetTensorDataset, build_sampler, DistributedWeightedSampler
 from .checkpoint import load_checkpoint, save_checkpoint
 from .metrics import calculate_physics_metrics, compute_accuracy, compute_loss, summarize_metrics
+from .optim import (
+    build_optimizers_and_schedulers,
+    DEFAULT_BODY_MODULES,
+    DEFAULT_HEAD_MODULES,
+    DEFAULT_HEAD_LR,
+    DEFAULT_WEIGHT_DECAY,
+)
 
 
 @dataclass
 class TrainerConfig:
     device: str = "auto"
-    lr: float = 1e-3
-    weight_decay: float = 0.01
+    lr: float = DEFAULT_HEAD_LR
+    body_lr: Optional[float] = None
+    head_lr: Optional[float] = None
+    weight_decay: float = DEFAULT_WEIGHT_DECAY
+    body_weight_decay: Optional[float] = None
+    head_weight_decay: Optional[float] = None
+    body_modules: Optional[List[str]] = None
+    head_modules: Optional[List[str]] = None
     grad_clip: Optional[float] = None
     num_workers: int = 2
     scheduler_fn: Optional[Any] = None
+    optimizer_fn: Optional[Any] = None
+    warmup_epochs: Optional[int] = 1
+    warmup_ratio: float = 0.1
+    warmup_start_factor: float = 0.1
+    min_lr: float = 0.0
     checkpoint_path: Optional[str] = None
     checkpoint_every: int = 1
     resume_from: Optional[str] = None
@@ -35,6 +53,20 @@ class TrainerConfig:
     save_top_k: int = 0
     monitor_metric: str = "val_loss"
     minimize_metric: bool = True
+
+    def __post_init__(self) -> None:
+        if self.head_lr is None:
+            self.head_lr = self.lr
+        if self.body_lr is None:
+            self.body_lr = self.head_lr * 0.1
+        if self.head_weight_decay is None:
+            self.head_weight_decay = self.weight_decay
+        if self.body_weight_decay is None:
+            self.body_weight_decay = self.weight_decay
+        if self.body_modules is None:
+            self.body_modules = list(DEFAULT_BODY_MODULES)
+        if self.head_modules is None:
+            self.head_modules = list(DEFAULT_HEAD_MODULES)
 
 
 class Trainer:
@@ -68,8 +100,10 @@ class Trainer:
         self.val_dataset: Optional[EvenetTensorDataset] = None
         self.test_dataset: Optional[EvenetTensorDataset] = None
 
-        self.optimizer: torch.optim.Optimizer
+        self.optimizer: Optional[torch.optim.Optimizer] = None
+        self.optimizers: List[torch.optim.Optimizer] = []
         self.scheduler: Optional[Any] = None
+        self.schedulers: List[Any] = []
         self._best_checkpoints: List[Tuple[float, str]] = []
 
     def _init_distributed(self) -> None:
@@ -217,11 +251,18 @@ class Trainer:
         self.test_dataset = EvenetTensorDataset(*test_data) if test_data is not None else None
 
     def _maybe_wrap_ddp(self) -> torch.nn.Module:
+        model = self.model.to(self.device)
         if self.world_size > 1:
             if self.device.type == "cuda":
-                return DDP(self.model.to(self.device), device_ids=[self.device])
-            return DDP(self.model.to(self.device))
-        return self.model.to(self.device)
+                model = DDP(model, device_ids=[self.device])
+            else:
+                model = DDP(model)
+        return model
+
+    def _unwrap_model(self) -> torch.nn.Module:
+        if isinstance(self.model, DDP):
+            return self.model.module
+        return self.model
 
     def _describe_sampler(self, sampler_obj: Optional[Any]) -> str:
         if sampler_obj is None:
@@ -308,6 +349,13 @@ class Trainer:
         else:
             logging.info("Validation loader: None")
 
+    def _setup_optimizers_and_schedulers(self, epochs: int) -> None:
+        self.optimizers, self.schedulers = build_optimizers_and_schedulers(
+            self.model, self.config, epochs, world_size=self.world_size
+        )
+        self.optimizer = self.optimizers[0] if self.optimizers else None
+        self.scheduler = self.schedulers[0] if self.schedulers else None
+
     def train(
         self,
         train_data: Tuple[Dict[str, torch.Tensor], torch.Tensor, Optional[torch.Tensor]],
@@ -324,10 +372,8 @@ class Trainer:
         if not any(isinstance(cb, NormalizationCallback) for cb in self.callbacks):
             self.callbacks.insert(0, NormalizationCallback())
 
-        wrapped_model = self._maybe_wrap_ddp()
-        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.config.lr, weight_decay=self.config.weight_decay)
-        if self.config.scheduler_fn:
-            self.scheduler = self.config.scheduler_fn(self.optimizer)
+        self.model = self._maybe_wrap_ddp()
+        self._setup_optimizers_and_schedulers(epochs)
 
         if self.config.resume_from:
             self.restore_checkpoint(self.config.resume_from)
@@ -371,14 +417,15 @@ class Trainer:
             for cb in self.callbacks:
                 cb.on_epoch_start(self, epoch)
 
-            train_metrics = self._run_epoch(wrapped_model, train_loader, epoch, training=True)
+            train_metrics = self._run_epoch(self.model, train_loader, epoch, training=True)
             if val_loader is not None:
-                val_metrics = self._run_epoch(wrapped_model, val_loader, epoch, training=False)
+                val_metrics = self._run_epoch(self.model, val_loader, epoch, training=False)
             else:
                 val_metrics = {}
 
-            if self.scheduler:
-                self.scheduler.step()
+            for scheduler in self.schedulers:
+                if scheduler:
+                    scheduler.step()
 
             if self.is_rank_zero():
                 merged = {f"train_{k}": v for k, v in train_metrics.items()}
@@ -403,18 +450,29 @@ class Trainer:
 
     def save_checkpoint(self, path: str, extra: Optional[Dict[str, Any]] = None) -> None:
         normalizer_state = self._current_normalizer_state()
+        extra_payload = dict(extra or {})
+        if self.schedulers:
+            scheduler_states = [s.state_dict() for s in self.schedulers if hasattr(s, "state_dict")]
+            if scheduler_states:
+                extra_payload["schedulers"] = scheduler_states if len(scheduler_states) > 1 else scheduler_states[0]
         logging.info(
             "Saving checkpoint to %s (includes normalizer=%s, extra keys=%s)",
             path,
             normalizer_state is not None,
-            list((extra or {}).keys()),
+            list(extra_payload.keys()),
         )
+        if len(self.optimizers) > 1:
+            optimizer_state = [opt.state_dict() for opt in self.optimizers]
+        elif self.optimizer is not None:
+            optimizer_state = self.optimizer.state_dict()
+        else:
+            optimizer_state = {}
         save_checkpoint(
             path,
-            model_state=self.model.state_dict(),
-            optimizer_state=self.optimizer.state_dict(),
+            model_state=self._unwrap_model().state_dict(),
+            optimizer_state=optimizer_state,
             normalizer_state=normalizer_state,
-            extra=extra,
+            extra=extra_payload,
         )
 
     def _extract_monitored_metric(self, metrics: Dict[str, float]) -> Optional[float]:
@@ -478,8 +536,6 @@ class Trainer:
             return
 
         extra = {"epoch": epoch}
-        if self.scheduler:
-            extra["scheduler"] = self.scheduler.state_dict()
         periodic_path = self._checkpoint_filename(Path(self.config.checkpoint_path), epoch, metric=None)
         self.save_checkpoint(str(periodic_path), extra)
 
@@ -495,8 +551,6 @@ class Trainer:
         checkpoint_path = self._checkpoint_filename(checkpoint_base, epoch, metric_value)
 
         extra = {"epoch": epoch, "monitored_metric": metric_value}
-        if self.scheduler:
-            extra["scheduler"] = self.scheduler.state_dict()
         self.save_checkpoint(str(checkpoint_path), extra)
         logging.info(
             "Saved top-k checkpoint at %s for %s=%.4f (k=%d/%d)",
@@ -527,16 +581,24 @@ class Trainer:
     def restore_checkpoint(self, path: str, map_location: Optional[str] = None) -> None:
         logging.info("Restoring checkpoint from %s", path)
         checkpoint = load_checkpoint(path, map_location=map_location)
-        self.model.load_state_dict(checkpoint["model"])
-        if "optimizer" in checkpoint and hasattr(self, "optimizer"):
-            self.optimizer.load_state_dict(checkpoint["optimizer"])
+        self._unwrap_model().load_state_dict(checkpoint["model"])
+        if "optimizer" in checkpoint:
+            opt_state = checkpoint["optimizer"]
+            if isinstance(opt_state, list) and self.optimizers:
+                for optimizer, state in zip(self.optimizers, opt_state):
+                    optimizer.load_state_dict(state)
+            elif self.optimizer is not None and isinstance(opt_state, dict):
+                self.optimizer.load_state_dict(opt_state)
         if "normalizer" in checkpoint and checkpoint["normalizer"]:
             self.attach_normalizer_state(checkpoint["normalizer"])
             logging.info("Restored normalizer state from checkpoint")
-        if self.config.scheduler_fn and "extra" in checkpoint:
-            scheduler_state = checkpoint["extra"].get("scheduler") if checkpoint.get("extra") else None
-            if scheduler_state and self.scheduler:
-                self.scheduler.load_state_dict(scheduler_state)
+        if "extra" in checkpoint:
+            scheduler_state = checkpoint["extra"].get("schedulers") if checkpoint.get("extra") else None
+            if scheduler_state:
+                states = scheduler_state if isinstance(scheduler_state, list) else [scheduler_state]
+                for scheduler, state in zip(self.schedulers, states):
+                    if scheduler:
+                        scheduler.load_state_dict(state)
 
     def _forward(self, model: torch.nn.Module, features: Dict[str, torch.Tensor]) -> torch.Tensor:
         try:
@@ -600,11 +662,14 @@ class Trainer:
                 outputs = self._forward(model, features)
                 loss = compute_loss(outputs, targets, weight_tensor)
                 if training:
-                    self.optimizer.zero_grad()
+                    optimizers = self.optimizers or ([self.optimizer] if self.optimizer else [])
+                    for optimizer in optimizers:
+                        optimizer.zero_grad()
                     loss.backward()
                     if self.config.grad_clip:
                         torch.nn.utils.clip_grad_norm_(model.parameters(), self.config.grad_clip)
-                    self.optimizer.step()
+                    for optimizer in optimizers:
+                        optimizer.step()
 
             metric_sum["loss"] += loss.item() * targets.size(0)
             metric_count["loss"] += targets.size(0)

@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 import copy
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 import torch
 import yaml
@@ -11,8 +11,9 @@ from evenet.control.global_config import DotDict
 
 from .callbacks import Callback, EvenetLiteNormalizer, NormalizationCallback
 from .data import EvenetTensorDataset
-from .trainer import Trainer, TrainerConfig
 from .model import EveNetLite
+from .optim import DEFAULT_BODY_MODULES, DEFAULT_HEAD_MODULES, DEFAULT_HEAD_LR, DEFAULT_WEIGHT_DECAY
+from .trainer import Trainer, TrainerConfig
 
 
 class EvenetLiteClassifier:
@@ -68,11 +69,22 @@ class EvenetLiteClassifier:
             self,
             class_labels: List[str],
             device: str = "auto",
-            lr: float = 1e-3,
-            weight_decay: float = 0.01,
+            lr: float = DEFAULT_HEAD_LR,
+            weight_decay: float = DEFAULT_WEIGHT_DECAY,
             model: torch.nn.Module = None,
+            optimizer_fn: Optional[Callable[..., torch.optim.Optimizer]] = None,
             grad_clip: Optional[float] = None,
-            scheduler_fn: Optional[callable] = None,
+            scheduler_fn: Optional[Callable[..., Any]] = None,
+            body_lr: Optional[float] = None,
+            head_lr: Optional[float] = None,
+            body_weight_decay: Optional[float] = None,
+            head_weight_decay: Optional[float] = None,
+            body_modules: Optional[List[str]] = None,
+            head_modules: Optional[List[str]] = None,
+            warmup_epochs: Optional[int] = 1,
+            warmup_ratio: float = 0.1,
+            warmup_start_factor: float = 0.1,
+            min_lr: float = 0.0,
             global_input_dim: int = 10,
             sequential_input_dim: int = 7,
             use_wandb: bool = False,
@@ -110,9 +122,20 @@ class EvenetLiteClassifier:
         self.config = TrainerConfig(
             device=device,
             lr=lr,
+            body_lr=body_lr,
+            head_lr=head_lr,
             weight_decay=weight_decay,
+            body_weight_decay=body_weight_decay,
+            head_weight_decay=head_weight_decay,
+            body_modules=body_modules if body_modules is not None else list(DEFAULT_BODY_MODULES),
+            head_modules=head_modules if head_modules is not None else list(DEFAULT_HEAD_MODULES),
             grad_clip=grad_clip,
+            optimizer_fn=optimizer_fn,
             scheduler_fn=scheduler_fn,
+            warmup_epochs=warmup_epochs,
+            warmup_ratio=warmup_ratio,
+            warmup_start_factor=warmup_start_factor,
+            min_lr=min_lr,
             use_wandb=use_wandb,
             wandb=wandb,
         )
