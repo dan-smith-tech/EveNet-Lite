@@ -83,6 +83,11 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Additional CLI arguments forwarded to train_multi_gpu.py",
     )
+    parser.add_argument(
+        "--sequential",
+        action="store_true",
+        help="Generate a script that loops over mass points sequentially (no Slurm array)",
+    )
     return parser.parse_args()
 
 
@@ -122,8 +127,33 @@ def write_slurm_script(args: argparse.Namespace, signals: List[Tuple[str, str, s
 
     labels, train_globs, valid_globs = zip(*signals)
 
-    SCRIPT_DIR = Path(__file__).resolve().parent  # .../EveNet-Lite/NERSC
-    repo_root = SCRIPT_DIR.parent  # .../EveNet-Lite
+    script_dir = Path(__file__).resolve().parent  # .../EveNet-Lite/NERSC
+    repo_root = script_dir.parent  # .../EveNet-Lite
+
+    array_directive = "" if args.sequential else f"#SBATCH --array=0-{len(signals) - 1}"
+    extra_args = args.extra_args.strip()
+    command_parts = [
+        "python train_multi_gpu.py",
+        "--train-sig \\\"${TRAIN_SIG}\\\"",
+        "--train-bkg \\\"${BACKGROUND_TRAIN_PATTERN}\\\"",
+        "--val-sig \\\"${VAL_SIG}\\\"",
+        "--val-bkg \\\"${BACKGROUND_VALID_PATTERN}\\\"",
+        "--eval-sig \\\"${VAL_SIG}\\\"",
+        "--eval-bkg \\\"${BACKGROUND_VALID_PATTERN}\\\"",
+        "--eval-output \\\"${EVAL_OUTPUT}\\\"",
+        "--checkpoint-path \\\"${OUTPUT_DIR}\\\"",
+        f"--sampler {args.sampler}",
+        f"--epochs {args.epochs}",
+        f"--batch-size {args.batch_size}",
+        "--pretrained",
+        f"--pretrained-path \\\"{args.pretrained_path}\\\"",
+        "--pretrained-source local",
+        "--wandb-name \\\"${MASS_POINT}\\\"",
+    ]
+    if extra_args:
+        command_parts.append(extra_args)
+
+    command_template = " \\\n  ".join(command_parts)
 
     script = f"""#!/bin/bash -l
 #SBATCH --job-name={args.job_name}
@@ -136,7 +166,7 @@ def write_slurm_script(args: argparse.Namespace, signals: List[Tuple[str, str, s
 #SBATCH --gpus-per-node={args.gpus_per_node}
 #SBATCH --cpus-per-task={args.cpus_per_task}
 #SBATCH --image={args.image}
-#SBATCH --array=0-{len(signals) - 1}
+{array_directive}
 
 set -euo pipefail
 
@@ -151,6 +181,28 @@ SIGNAL_VALID_PATTERNS={format_bash_array(valid_globs)}
 
 BACKGROUND_TRAIN_PATTERN="{background_train}"
 BACKGROUND_VALID_PATTERN="{background_valid}"
+"""
+
+    if args.sequential:
+        script += f"""
+set -x
+for idx in "${{!SIGNAL_LABELS[@]}}"; do
+  MASS_POINT="${{SIGNAL_LABELS[$idx]}}"
+  TRAIN_SIG="${{SIGNAL_TRAIN_PATTERNS[$idx]}}"
+  VAL_SIG="${{SIGNAL_VALID_PATTERNS[$idx]}}"
+
+  OUTPUT_DIR="${{CHECKPOINT_ROOT}}/${{MASS_POINT}}"
+  EVAL_OUTPUT="${{OUTPUT_DIR}}/eval"
+  mkdir -p "${{OUTPUT_DIR}}" "${{EVAL_OUTPUT}}"
+
+  cmd="{command_template}"
+
+  srun -l shifter \\
+    bash -c "source export_DDP_vars.sh && ${{cmd}}"
+done
+"""
+    else:
+        script += f"""
 
 MASS_POINT=${{SIGNAL_LABELS[$SLURM_ARRAY_TASK_ID]}}
 TRAIN_SIG=${{SIGNAL_TRAIN_PATTERNS[$SLURM_ARRAY_TASK_ID]}}
@@ -160,24 +212,7 @@ OUTPUT_DIR="${{CHECKPOINT_ROOT}}/${{MASS_POINT}}"
 EVAL_OUTPUT="${{OUTPUT_DIR}}/eval"
 mkdir -p "${{OUTPUT_DIR}}" "${{EVAL_OUTPUT}}"
 
-cmd="python train_multi_gpu.py \\
-  --train-sig \\"${{TRAIN_SIG}}\\" \\
-  --train-bkg \\"${{BACKGROUND_TRAIN_PATTERN}}\\" \\
-  --val-sig \\"${{VAL_SIG}}\\" \\
-  --val-bkg \\"${{BACKGROUND_VALID_PATTERN}}\\" \\
-  --eval-sig \\"${{VAL_SIG}}\\" \\
-  --eval-bkg \\"${{BACKGROUND_VALID_PATTERN}}\\" \\
-  --eval-output \\"${{EVAL_OUTPUT}}\\" \\
-  --checkpoint-path \\"${{OUTPUT_DIR}}\\" \\
-  --sampler {args.sampler} \\
-  --epochs {args.epochs} \\
-  --batch-size {args.batch_size} \\
-  --pretrained \\
-  --pretrained-path \\"{args.pretrained_path}\\" \\
-  --pretrained-source local \\
-  --wandb-name \\"${{MASS_POINT}}\\" \\
-  {args.extra_args} \\
-  "
+cmd="{command_template}"
 
 set -x
 srun -l shifter \\

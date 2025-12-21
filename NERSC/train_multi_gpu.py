@@ -1,5 +1,6 @@
 import argparse
 import logging
+import re
 from glob import glob
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -24,9 +25,25 @@ def _resolve_paths(path_str: str, description: str) -> List[Path]:
     if candidate.is_file():
         return [candidate]
 
-    matches = sorted(Path(p) for p in glob(path_str))
+    def _expand_braces(pattern: str) -> List[str]:
+        match = re.search(r"\{([^{}]+)\}", pattern)
+        if not match:
+            return [pattern]
+
+        options = match.group(1).split(",")
+        prefix = pattern[: match.start()]
+        suffix = pattern[match.end() :]
+        expanded: List[str] = []
+        for option in options:
+            expanded.extend(_expand_braces(prefix + option + suffix))
+        return expanded
+
+    expanded_patterns = _expand_braces(path_str)
+    matches = sorted({Path(p) for pat in expanded_patterns for p in glob(pat)})
     if not matches:
-        raise FileNotFoundError(f"No files matched {description} pattern: {path_str}")
+        raise FileNotFoundError(
+            f"No files matched {description} pattern: {path_str} (expanded to {expanded_patterns})"
+        )
 
     logger.info("%s pattern matched %d files: %s", description, len(matches), ", ".join(str(m) for m in matches))
     return matches
