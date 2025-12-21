@@ -349,11 +349,27 @@ class EvenetLiteClassifier:
         )
         logger.info("All components loaded: %s", "YES" if fully_loaded else "NO")
 
-        if loaded_keys:
-            groups = Counter([k.split(".")[0] for k in loaded_keys])
+        if model_state:
+            total_groups = Counter([k.split(".")[0] for k in model_state])
+            loaded_groups = Counter([k.split(".")[0] for k in loaded_keys])
+            missing_groups = Counter([k.split(".")[0] for k in missing_keys])
+            mismatch_groups = Counter([k.split(".")[0] for k in shape_mismatch_keys])
+
             logger.info("--- Breakdown ---")
-            for prefix, count in groups.items():
-                logger.info("• %s: %d layers loaded", prefix.ljust(15), count)
+            for prefix, total in total_groups.items():
+                loaded_count = loaded_groups.get(prefix, 0)
+                missing_count = missing_groups.get(prefix, 0)
+                mismatch_count = mismatch_groups.get(prefix, 0)
+                not_loaded = total - loaded_count
+                logger.info(
+                    "• %s: %d/%d loaded (%d not loaded: %d missing, %d mismatched)",
+                    prefix.ljust(15),
+                    loaded_count,
+                    total,
+                    not_loaded,
+                    missing_count,
+                    mismatch_count,
+                )
 
         if shape_mismatch_keys:
             logger.warning("Shape mismatches for %d layers", len(shape_mismatch_keys))
