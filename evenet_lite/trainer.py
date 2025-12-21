@@ -389,94 +389,94 @@ class Trainer:
         sampler: Optional[str],
         epoch_size: Optional[int] = None,
     ) -> None:
-        self.global_step = 0
-        self.setup_datasets(train_data, val_data, test_data)
-        # Insert normalization callback by default
-        if not any(isinstance(cb, NormalizationCallback) for cb in self.callbacks):
-            self.callbacks.insert(0, NormalizationCallback())
+        try:
+            self.global_step = 0
+            self.setup_datasets(train_data, val_data, test_data)
+            # Insert normalization callback by default
+            if not any(isinstance(cb, NormalizationCallback) for cb in self.callbacks):
+                self.callbacks.insert(0, NormalizationCallback())
 
-        self.model = self._maybe_wrap_ddp()
-        sampler_obj = build_sampler(sampler, self.train_dataset, self.train_dataset.sample_weights, epoch_size)
-        if sampler_obj is None and self.world_size > 1:
-            sampler_obj = DistributedSampler(self.train_dataset)
+            self.model = self._maybe_wrap_ddp()
+            sampler_obj = build_sampler(sampler, self.train_dataset, self.train_dataset.sample_weights, epoch_size)
+            if sampler_obj is None and self.world_size > 1:
+                sampler_obj = DistributedSampler(self.train_dataset)
 
-        train_loader = DataLoader(
-            self.train_dataset,
-            batch_size=batch_size,
-            sampler=sampler_obj,
-            shuffle=sampler_obj is None,
-            num_workers=self.config.num_workers,
-            pin_memory=True,
-            drop_last=False,
-        )
-
-        val_loader = None
-        val_sampler = None
-        if self.val_dataset is not None:
-            val_sampler = DistributedSampler(self.val_dataset, shuffle=False) if self.world_size > 1 else None
-            val_loader = DataLoader(
-                self.val_dataset,
+            train_loader = DataLoader(
+                self.train_dataset,
                 batch_size=batch_size,
-                sampler=val_sampler,
-                shuffle=False,
+                sampler=sampler_obj,
+                shuffle=sampler_obj is None,
                 num_workers=self.config.num_workers,
+                pin_memory=True,
+                drop_last=False,
             )
 
-        self.train_sampler = sampler_obj
-        self.val_sampler = val_loader.sampler if val_loader else None
-        self.train_loader = train_loader
-        self.val_loader = val_loader
+            val_loader = None
+            val_sampler = None
+            if self.val_dataset is not None:
+                val_sampler = DistributedSampler(self.val_dataset, shuffle=False) if self.world_size > 1 else None
+                val_loader = DataLoader(
+                    self.val_dataset,
+                    batch_size=batch_size,
+                    sampler=val_sampler,
+                    shuffle=False,
+                    num_workers=self.config.num_workers,
+                )
 
-        steps_per_epoch = max(1, len(train_loader))
-        self._setup_optimizers_and_schedulers(epochs, steps_per_epoch)
+            self.train_sampler = sampler_obj
+            self.val_sampler = val_loader.sampler if val_loader else None
+            self.train_loader = train_loader
+            self.val_loader = val_loader
 
-        if self.config.resume_from:
-            self.restore_checkpoint(self.config.resume_from)
+            steps_per_epoch = max(1, len(train_loader))
+            self._setup_optimizers_and_schedulers(epochs, steps_per_epoch)
 
-        for cb in self.callbacks:
-            cb.on_train_start(self)
-
-        self._log_training_overview(train_loader, val_loader, sampler_obj, val_sampler, epochs)
-
-        for epoch in range(epochs):
-            if isinstance(sampler_obj, (DistributedSampler, DistributedWeightedSampler)):
-                sampler_obj.set_epoch(epoch)
-            if isinstance(val_loader, DataLoader) and isinstance(val_loader.sampler, DistributedSampler):
-                val_loader.sampler.set_epoch(epoch)
-
-            for cb in self.callbacks:
-                cb.on_epoch_start(self, epoch)
-
-            train_metrics = self._run_epoch(self.model, train_loader, epoch, training=True)
-            if val_loader is not None:
-                val_metrics = self._run_epoch(self.model, val_loader, epoch, training=False)
-            else:
-                val_metrics = {}
-
-            if self.is_rank_zero():
-                merged = {f"train_{k}": v for k, v in train_metrics.items()}
-                merged.update({f"val_{k}": v for k, v in val_metrics.items()})
-                self._log_epoch_stdout(epoch, epochs, merged)
-                if self.wandb_run is not None:
-                    wandb_payload = {
-                        "epoch": epoch + 1,
-                        **self._format_wandb_epoch_metrics(train_metrics, val_metrics),
-                    }
-                    self.wandb_run.log(wandb_payload)
-            else:
-                merged = {}
-
-            if self.config.checkpoint_path and self.is_rank_zero():
-                self._save_epoch_checkpoint(merged, epoch)
+            if self.config.resume_from:
+                self.restore_checkpoint(self.config.resume_from)
 
             for cb in self.callbacks:
-                cb.on_epoch_end(self, epoch, merged)
+                cb.on_train_start(self)
 
-        for cb in self.callbacks:
-            cb.on_train_end(self)
+            self._log_training_overview(train_loader, val_loader, sampler_obj, val_sampler, epochs)
 
-        if self.wandb_run is not None and self.is_rank_zero():
-            self.wandb_run.finish()
+            for epoch in range(epochs):
+                if isinstance(sampler_obj, (DistributedSampler, DistributedWeightedSampler)):
+                    sampler_obj.set_epoch(epoch)
+                if isinstance(val_loader, DataLoader) and isinstance(val_loader.sampler, DistributedSampler):
+                    val_loader.sampler.set_epoch(epoch)
+
+                for cb in self.callbacks:
+                    cb.on_epoch_start(self, epoch)
+
+                train_metrics = self._run_epoch(self.model, train_loader, epoch, training=True)
+                if val_loader is not None:
+                    val_metrics = self._run_epoch(self.model, val_loader, epoch, training=False)
+                else:
+                    val_metrics = {}
+
+                if self.is_rank_zero():
+                    merged = {f"train_{k}": v for k, v in train_metrics.items()}
+                    merged.update({f"val_{k}": v for k, v in val_metrics.items()})
+                    self._log_epoch_stdout(epoch, epochs, merged)
+                    if self.wandb_run is not None:
+                        wandb_payload = {
+                            "epoch": epoch + 1,
+                            **self._format_wandb_epoch_metrics(train_metrics, val_metrics),
+                        }
+                        self.wandb_run.log(wandb_payload)
+                else:
+                    merged = {}
+
+                if self.config.checkpoint_path and self.is_rank_zero():
+                    self._save_epoch_checkpoint(merged, epoch)
+
+                for cb in self.callbacks:
+                    cb.on_epoch_end(self, epoch, merged)
+
+            for cb in self.callbacks:
+                cb.on_train_end(self)
+        finally:
+            self._finalize_training()
 
     def save_checkpoint(self, path: str, extra: Optional[Dict[str, Any]] = None) -> None:
         normalizer_state = self._current_normalizer_state()
@@ -517,6 +517,26 @@ class Trainer:
             return float(value)
         except (TypeError, ValueError):
             return None
+
+    def _finalize_training(self) -> None:
+        if self.wandb_run is not None and self.is_rank_zero():
+            try:
+                self.wandb_run.finish()
+            except Exception as exc:  # pragma: no cover - best-effort cleanup
+                logging.warning("Failed to close Weights & Biases run cleanly: %s", exc)
+            finally:
+                self.wandb_run = None
+
+        if dist.is_available() and dist.is_initialized():
+            try:
+                if self.world_size > 1:
+                    dist.barrier()
+            except Exception as exc:  # pragma: no cover - best-effort cleanup
+                logging.warning("Distributed barrier failed during shutdown: %s", exc)
+            try:
+                dist.destroy_process_group()
+            except Exception as exc:  # pragma: no cover - best-effort cleanup
+                logging.warning("Failed to destroy process group cleanly: %s", exc)
 
     def _should_replace_worst(self, metric: float) -> bool:
         if len(self._best_checkpoints) < self.config.save_top_k:
