@@ -1,5 +1,6 @@
 import argparse
 import logging
+from glob import glob
 from pathlib import Path
 from typing import Dict, Tuple
 
@@ -9,6 +10,26 @@ from evenet_lite import run_evenet_lite_training
 
 
 FeatureBundle = Tuple[Dict[str, torch.Tensor], torch.Tensor]
+
+
+logger = logging.getLogger(__name__)
+
+
+def _resolve_path(path_str: str, description: str) -> Path:
+    """Resolve a concrete file from a path or glob pattern."""
+
+    candidate = Path(path_str)
+    if candidate.is_file():
+        return candidate
+
+    matches = sorted(Path(p) for p in glob(path_str))
+    if not matches:
+        raise FileNotFoundError(f"No files matched {description} pattern: {path_str}")
+
+    if len(matches) > 1:
+        logger.info("%s pattern matched %d files; using first: %s", description, len(matches), matches[0])
+
+    return matches[0]
 
 
 def _load_split(sig_path: Path, bkg_path: Path) -> FeatureBundle:
@@ -31,10 +52,10 @@ def _load_split(sig_path: Path, bkg_path: Path) -> FeatureBundle:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="DDP-friendly Evenet-Lite runner for NERSC")
-    parser.add_argument("--train-sig", type=Path, required=True, help="Path to signal training tensor (.pt)")
-    parser.add_argument("--train-bkg", type=Path, required=True, help="Path to background training tensor (.pt)")
-    parser.add_argument("--val-sig", type=Path, help="Optional path to signal validation tensor (.pt)")
-    parser.add_argument("--val-bkg", type=Path, help="Optional path to background validation tensor (.pt)")
+    parser.add_argument("--train-sig", type=str, required=True, help="Path or glob pattern to signal training tensor (.pt)")
+    parser.add_argument("--train-bkg", type=str, required=True, help="Path or glob pattern to background training tensor (.pt)")
+    parser.add_argument("--val-sig", type=str, help="Optional path or glob pattern to signal validation tensor (.pt)")
+    parser.add_argument("--val-bkg", type=str, help="Optional path or glob pattern to background validation tensor (.pt)")
     parser.add_argument("--epochs", type=int, default=3, help="Number of training epochs")
     parser.add_argument("--batch-size", type=int, default=512, help="Mini-batch size")
     parser.add_argument("--sampler", choices=["weighted", "none"], default="weighted", help="Sampler strategy")
@@ -57,12 +78,18 @@ def main() -> None:
     args = parse_args()
     log_level = getattr(logging, args.log_level.upper())
 
-    (train_features, train_labels) = _load_split(args.train_sig, args.train_bkg)
+    (train_features, train_labels) = _load_split(
+        _resolve_path(args.train_sig, "train signal"),
+        _resolve_path(args.train_bkg, "train background"),
+    )
 
     val_features = None
     val_labels = None
     if args.val_sig and args.val_bkg:
-        val_features, val_labels = _load_split(args.val_sig, args.val_bkg)
+        val_features, val_labels = _load_split(
+            _resolve_path(args.val_sig, "validation signal"),
+            _resolve_path(args.val_bkg, "validation background"),
+        )
 
     run_evenet_lite_training(
         train_features=train_features,
