@@ -42,9 +42,13 @@ if __name__ == '__main__':
     clf = EvenetLiteClassifier(
         class_labels=['bkg', 'signal'],
         device="auto",  # "cpu", "cuda", or "auto"
-        lr=1e-3,
-        weight_decay=0.01,
-        grad_clip=1.0,  # optional gradient clipping
+        body_lr=1e-4,
+        head_lr=1e-3,
+        weight_decay=1e-3,
+        grad_clip=1.0,
+        warmup_epochs=1,
+        warmup_ratio=0.1,
+        warmup_start_factor=0.1,
         log_level=logging.INFO,
         use_wandb=True,
         wandb={
@@ -63,7 +67,7 @@ if __name__ == '__main__':
         epoch_size=1280, # or None,
         save_top_k=2,
         checkpoint_every=1,
-        checkpoint_path="./checkpoint",
+        # checkpoint_path="./checkpoint",
         feature_names={"objects": obj_feature_names, "globals": global_feature_names},
         normalization_rules={
             "x": {
