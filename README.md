@@ -98,9 +98,14 @@ Set `sampler="weighted"` in `fit` to enable the distributed-safe weighted sample
 
 Use `EvenetLiteClassifier.save_checkpoint` after `fit()` to persist model, optimizer, normalizer, and scheduler state. Restore weights for inference (or to resume training) via `EvenetLiteClassifier.load_checkpoint`, providing `feature_names` if the classifier has not been fitted yet. The underlying checkpoint helpers remain rank-safe and work with both single-GPU and DDP runs.
 
-### Hugging Face weight loading
+### Pretrained weight loading
 
-`load_pretrained_weights` downloads weights from the Hugging Face Hub while respecting the `EVENET_MODEL_PATH` and `HF_TOKEN` environment variables. The loader is shape-safe and allows partial weight loading so you can warm-start compatible parameters.
+`EvenetLiteClassifier` supports optional warm-starting from pretrained checkpoints. Pass `pretrained=True` at construction time and choose a source:
+
+- **Hugging Face (default)**: set `pretrained_source="hf"` along with a `repo_id` and `filename`. The helper respects the `EVENET_MODEL_PATH` and `HF_TOKEN` environment variables and downloads through `evenet_lite.hf_utils.load_pretrained_weights`.
+- **Local file**: set `pretrained_source="local"` and provide `pretrained_path`.
+
+The loader applies parameters only when tensor shapes match, leaving mismatched layers randomly initialized and reporting a concise summary of loaded, missing, and unexpected keys.
 
 ## Module overview
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 import copy
+from collections import Counter
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 import torch
@@ -11,6 +12,7 @@ from evenet.control.global_config import DotDict
 
 from .callbacks import Callback, EvenetLiteNormalizer, NormalizationCallback
 from .data import EvenetTensorDataset
+from .hf_utils import load_pretrained_weights
 from .model import EveNetLite
 from .optim import DEFAULT_BODY_MODULES, DEFAULT_HEAD_MODULES, DEFAULT_HEAD_LR, DEFAULT_WEIGHT_DECAY
 from .trainer import Trainer, TrainerConfig
@@ -90,6 +92,12 @@ class EvenetLiteClassifier:
             use_wandb: bool = False,
             wandb: Optional[Dict[str, Any]] = None,
             log_level: int = logging.INFO,
+            pretrained: bool = False,
+            pretrained_source: str = "hf",
+            pretrained_path: Optional[str] = None,
+            pretrained_repo_id: Optional[str] = None,
+            pretrained_filename: Optional[str] = None,
+            pretrained_cache_dir: Optional[str] = None,
     ) -> None:
         root_logger = logging.getLogger()
         log_format = "%(asctime)s | %(levelname)s | %(message)s"
@@ -118,6 +126,14 @@ class EvenetLiteClassifier:
             )
         else:
             self.model = model
+        if pretrained:
+            self._load_pretrained_weights(
+                source=pretrained_source,
+                local_path=pretrained_path,
+                repo_id=pretrained_repo_id,
+                filename=pretrained_filename,
+                cache_dir=pretrained_cache_dir,
+            )
         self.class_labels = class_labels
         self.config = TrainerConfig(
             device=device,
@@ -229,3 +245,119 @@ class EvenetLiteClassifier:
         if self.trainer is None:
             raise RuntimeError("Model must be fitted before saving checkpoints")
         self.trainer.save_checkpoint(path)
+
+    # ------------------------------------------------------------------
+    # Pretrained weight loading
+    # ------------------------------------------------------------------
+    def _load_pretrained_weights(
+        self,
+        source: str = "hf",
+        local_path: Optional[str] = None,
+        repo_id: Optional[str] = None,
+        filename: Optional[str] = None,
+        cache_dir: Optional[str] = None,
+    ) -> None:
+        """Soft-load pretrained weights with shape safety and concise reporting."""
+
+        logger = logging.getLogger(__name__)
+        logger.info(
+            "Loading pretrained weights using source=%s (repo_id=%s, filename=%s, local_path=%s)",
+            source,
+            repo_id,
+            filename,
+            local_path,
+        )
+
+        checkpoint: Optional[Dict[str, Any]] = None
+        if source == "hf":
+            if repo_id is None or filename is None:
+                logger.warning("Pretrained source set to HF but repo_id/filename not provided; skipping load.")
+                return
+            checkpoint = load_pretrained_weights(repo_id=repo_id, filename=filename, cache_dir=cache_dir)
+            if checkpoint is None:
+                logger.warning("Failed to load pretrained weights from Hugging Face for repo %s", repo_id)
+                return
+        elif source == "local":
+            if local_path is None:
+                logger.warning("Local pretrained weights requested but no path provided; skipping load.")
+                return
+            resolved = Path(local_path).expanduser()
+            if not resolved.exists():
+                logger.warning("Local pretrained weights not found at %s; skipping load.", resolved)
+                return
+            checkpoint = torch.load(resolved, map_location="cpu")
+        else:
+            logger.warning("Unknown pretrained source '%s'; skipping load.", source)
+            return
+
+        state = checkpoint.get("state_dict") if isinstance(checkpoint, dict) else None
+        if state is None and isinstance(checkpoint, dict):
+            state = checkpoint.get("model")
+        if state is None:
+            state = checkpoint
+
+        if not isinstance(state, dict):
+            logger.warning("Pretrained checkpoint did not contain a state dict; skipping load.")
+            return
+
+        self._soft_load_state_dict(state)
+
+    def _soft_load_state_dict(self, state: Dict[str, torch.Tensor]) -> None:
+        """Partially load a state dict when shapes match and report a summary."""
+
+        logger = logging.getLogger(__name__)
+        ckpt_state = {k.replace("model.", ""): v for k, v in state.items()}
+        model_state = self.model.state_dict()
+
+        loaded_keys: List[str] = []
+        shape_mismatch_keys: List[str] = []
+        missing_keys: List[str] = []
+        unexpected_keys: List[str] = []
+
+        filtered_state: Dict[str, torch.Tensor] = {}
+
+        for key, model_value in model_state.items():
+            if key in ckpt_state:
+                ckpt_value = ckpt_state[key]
+                if ckpt_value.shape == model_value.shape:
+                    filtered_state[key] = ckpt_value
+                    loaded_keys.append(key)
+                else:
+                    shape_mismatch_keys.append(
+                        f"{key} (ckpt: {list(ckpt_value.shape)} vs model: {list(model_value.shape)})"
+                    )
+            else:
+                missing_keys.append(key)
+
+        for key in ckpt_state:
+            if key not in model_state:
+                unexpected_keys.append(key)
+
+        self.model.load_state_dict(filtered_state, strict=False)
+
+        logger.info("======== Soft Load Summary ========")
+        logger.info("Loaded %d / %d layers", len(loaded_keys), len(model_state))
+
+        if loaded_keys:
+            groups = Counter([k.split(".")[0] for k in loaded_keys])
+            logger.info("--- Breakdown ---")
+            for prefix, count in groups.items():
+                logger.info("• %s: %d layers loaded", prefix.ljust(15), count)
+
+        if shape_mismatch_keys:
+            logger.warning("Shape mismatches for %d layers", len(shape_mismatch_keys))
+            for msg in shape_mismatch_keys[:5]:
+                logger.warning("  - %s", msg)
+            if len(shape_mismatch_keys) > 5:
+                logger.warning("  - ... and %d more", len(shape_mismatch_keys) - 5)
+
+        if missing_keys:
+            missing_groups = Counter([k.split(".")[0] for k in missing_keys])
+            logger.warning("Missing layers (randomly initialized): %d", len(missing_keys))
+            for prefix, count in missing_groups.items():
+                logger.warning("• %s: %d layers missing", prefix.ljust(15), count)
+
+        if unexpected_keys:
+            logger.warning("Unexpected layers in checkpoint (ignored): %d", len(unexpected_keys))
+
+        logger.info("===================================")
