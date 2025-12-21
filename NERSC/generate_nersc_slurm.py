@@ -157,27 +157,27 @@ EVAL_OUTPUT="${{OUTPUT_DIR}}/eval"
 mkdir -p "${{OUTPUT_DIR}}" "${{EVAL_OUTPUT}}"
 
 cmd="python train_multi_gpu.py \\
-  --train-sig \"${{TRAIN_SIG}}\" \\
-  --train-bkg \"${{BACKGROUND_TRAIN_PATTERN}}\" \\
-  --val-sig \"${{VAL_SIG}}\" \\
-  --val-bkg \"${{BACKGROUND_VALID_PATTERN}}\" \\
-  --eval-sig \"${{VAL_SIG}}\" \\
-  --eval-bkg \"${{BACKGROUND_VALID_PATTERN}}\" \\
-  --eval-output \"${{EVAL_OUTPUT}}\" \\
-  --checkpoint-path \"${{OUTPUT_DIR}}\" \\
+  --train-sig \\"${{TRAIN_SIG}}\\" \\
+  --train-bkg \\"${{BACKGROUND_TRAIN_PATTERN}}\\" \\
+  --val-sig \\"${{VAL_SIG}}\\" \\
+  --val-bkg \\"${{BACKGROUND_VALID_PATTERN}}\\" \\
+  --eval-sig \\"${{VAL_SIG}}\\" \\
+  --eval-bkg \\"${{BACKGROUND_VALID_PATTERN}}\\" \\
+  --eval-output \\"${{EVAL_OUTPUT}}\\" \\
+  --checkpoint-path \\"${{OUTPUT_DIR}}\\" \\
   --sampler {args.sampler} \\
   --epochs {args.epochs} \\
   --batch-size {args.batch_size} \\
   --pretrained \\
-  --pretrained-path \"{args.pretrained_path}\" \\
+  --pretrained-path \\"{args.pretrained_path}\\" \\
   --pretrained-source local \\
-  --wandb-name \"${{MASS_POINT}}\" \\
+  --wandb-name \\"${{MASS_POINT}}\\" \\
   {args.extra_args} \\
   "
 
 set -x
 srun -l shifter \\
-  bash -c "source export_DDP_vars.sh && \${{cmd}}"
+  bash -c "source export_DDP_vars.sh && ${{cmd}}"
 """
 
     args.output.write_text(script)
