@@ -33,10 +33,14 @@ def _worker(rank: int, world_size: int) -> None:
         low_weight_mean = counts[:2].mean()
         bias_ok = high_weight_mean > (low_weight_mean * 2)
         logger.info(
-            "DistributedWeightedSampler bias: %s | counts=%s",
+            "DistributedWeightedSampler bias: %s | expected heavier sampling for indices >=2 | counts=%s",
             "ok" if bias_ok else "failed",
             counts.tolist(),
             extra={"rank": rank},
+        )
+        assert bias_ok, (
+            "DistributedWeightedSampler should draw high-weighted samples at least twice as often; "
+            f"observed counts={counts.tolist()}"
         )
 
     cleanup_process_group()

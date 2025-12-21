@@ -24,13 +24,19 @@ def _worker(rank: int, world_size: int) -> None:
     dist.all_gather_object(gathered, indices)
     if rank == 0:
         flattened = [idx for replica in gathered for idx in replica]
-        coverage_complete = sorted(flattened) == list(range(len(dataset)))
+        expected = list(range(len(dataset)))
+        coverage_complete = sorted(flattened) == expected
         replicas_distinct = len(flattened) == len(set(flattened))
         logger.info(
-            "DistributedSampler coverage: %s | per-rank indices=%s",
+            "DistributedSampler coverage: %s | expected global indices=%s | per-rank indices=%s",
             "ok" if coverage_complete and replicas_distinct else "failed",
+            expected,
             gathered,
             extra={"rank": rank},
+        )
+        assert coverage_complete and replicas_distinct, (
+            "DistributedSampler should cover each dataset element exactly once across ranks; "
+            f"expected {expected}, got {gathered}"
         )
 
     cleanup_process_group()

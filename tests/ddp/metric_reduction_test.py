@@ -30,6 +30,10 @@ def _worker(rank: int, world_size: int) -> None:
     )
     trainer = Trainer(TinyClassifier(), feature_names, config, callbacks=callbacks, class_labels=["a", "b"])
     dataset = build_synthetic_dataset(num_samples=8)
+    # ``NormalizationCallback`` expects the trainer to own the dataset so it can
+    # fit a normalizer in ``on_train_start``. Mimic the real training flow by
+    # attaching the synthetic dataset to the trainer before callbacks run.
+    trainer.setup_datasets((dataset.raw_features, dataset.labels, dataset.sample_weights), None, None)
     sampler = DistributedSampler(dataset, shuffle=False) if world_size > 1 else None
     loader = DataLoader(dataset, batch_size=2, sampler=sampler, shuffle=sampler is None, num_workers=0)
     logger.info("Starting metric reduction training step", extra={"rank": rank})
