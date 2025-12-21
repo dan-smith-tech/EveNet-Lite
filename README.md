@@ -56,11 +56,55 @@ clf.fit(
     batch_size=256,
     sampler="weighted",    # or None
     epoch_size=None,
+    debug=True,             # enable verbose gradient/sampler logging
 )
 
 probs = clf.predict(X_test, batch_size=256)
 metrics = clf.evaluate(X_test, y_test, w_test, batch_size=256)
 ```
+
+### Convenience runner
+
+For quick experiments with pre-assembled tensors, the convenience runner detects
+DDP from standard `torchrun` environment variables, builds the classifier, and
+invokes `fit` with the provided tensors:
+
+```python
+from evenet_lite import run_evenet_lite_training
+
+classifier = run_evenet_lite_training(
+    train_features=X_train,
+    train_labels=y_train,
+    train_weights=w_train,
+    val_features=X_val,
+    val_labels=y_val,
+    val_weights=w_val,
+    class_labels=["background", "signal"],
+    sampler="weighted",
+    epochs=3,
+    batch_size=512,
+    debug=True,
+)
+```
+
+Key arguments to the runner:
+
+* `train_features` / `train_labels` (required): tensors holding your training
+  data and class indices. Provide `train_weights` for per-example weighting.
+* `val_features` / `val_labels` / `val_weights` (optional): validation tensors
+  with the same structure as the training payload.
+* `class_labels` (required): ordered list of class names passed through to the
+  classifier.
+* `feature_names` / `normalization_rules` (optional): forwarded to the
+  normalizer for naming and rule-based scaling.
+* `sampler` and `epoch_size` (optional): control sampling strategy; set
+  `sampler="weighted"` to turn on the distributed-safe weighted sampler.
+* `callbacks` (optional): additional `Callback` instances to register.
+* `checkpoint_path`, `resume_from`, `checkpoint_every`, `save_top_k`,
+  `monitor_metric`, `minimize_metric`: checkpointing knobs forwarded to
+  `Trainer`.
+* `debug`: toggles the rank-safe `DebugCallback` for logging sampler summaries,
+  gradient norms, and batch/epoch metrics during training.
 
 ### Data expectations
 

@@ -1,0 +1,116 @@
+import logging
+import os
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+import torch
+
+from .callbacks import Callback
+from .classifier import EvenetLiteClassifier
+
+
+def _detect_ddp() -> Tuple[bool, int, int]:
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    return world_size > 1, world_size, local_rank
+
+
+def run_evenet_lite_training(
+    train_features: Dict[str, torch.Tensor],
+    train_labels: torch.Tensor,
+    train_weights: Optional[torch.Tensor] = None,
+    *,
+    class_labels: List[str],
+    val_features: Optional[Dict[str, torch.Tensor]] = None,
+    val_labels: Optional[torch.Tensor] = None,
+    val_weights: Optional[torch.Tensor] = None,
+    feature_names: Optional[Dict[str, Iterable[str]]] = None,
+    normalization_rules: Optional[Dict[str, Dict[str, str]]] = None,
+    callbacks: Optional[List[Callback]] = None,
+    sampler: Optional[str] = None,
+    epoch_size: Optional[int] = None,
+    epochs: int = 10,
+    batch_size: int = 256,
+    checkpoint_path: Optional[str] = None,
+    resume_from: Optional[str] = None,
+    checkpoint_every: int = 1,
+    save_top_k: int = 0,
+    monitor_metric: str = "val_loss",
+    minimize_metric: bool = True,
+    debug: bool = False,
+    **classifier_kwargs: Any,
+) -> EvenetLiteClassifier:
+    """Convenience entrypoint for running Evenet-Lite training on prepared tensors.
+
+    The runner assembles the expected training tuples, detects DDP from
+    ``torchrun`` environment variables, instantiates :class:`EvenetLiteClassifier`,
+    and invokes :meth:`EvenetLiteClassifier.fit`. When no distributed variables
+    are present, it defaults to single-GPU (or CPU) execution.
+
+    Args:
+        train_features: Mapping of feature group name to tensor with shape
+            matching the model contract (e.g., ``{"objects": Tensor[N, M, F]}``).
+        train_labels: Class indices for each training example.
+        train_weights: Optional per-example weights aligned with ``train_labels``.
+        class_labels: Ordered list of class names passed to
+            :class:`EvenetLiteClassifier`.
+        val_features: Optional validation features following the same structure
+            as ``train_features``.
+        val_labels: Optional validation labels aligned with ``val_features``.
+        val_weights: Optional per-example validation weights.
+        feature_names: Optional mapping of feature group name to the list of
+            feature strings, used by normalization callbacks.
+        normalization_rules: Optional normalization configuration passed through
+            to :meth:`EvenetLiteClassifier.fit`.
+        callbacks: Additional callbacks to append to training (debugging,
+            metrics logging, etc.).
+        sampler: Sampler strategy name (e.g., ``"weighted"``) forwarded to
+            :class:`Trainer`.
+        epoch_size: Optional number of samples per epoch when using a sampler.
+        epochs: Number of epochs to train.
+        batch_size: Mini-batch size.
+        checkpoint_path: Directory for checkpoints.
+        resume_from: Optional path to a checkpoint to resume training from.
+        checkpoint_every: Checkpoint frequency in epochs.
+        save_top_k: Maximum number of checkpoints to retain when monitoring a
+            metric.
+        monitor_metric: Metric name used for checkpoint ranking.
+        minimize_metric: Whether ``monitor_metric`` should be minimized.
+        debug: Whether to enable verbose ``DebugCallback`` logging.
+        **classifier_kwargs: Any additional arguments forwarded to
+            :class:`EvenetLiteClassifier`.
+    """
+
+    is_ddp, world_size, local_rank = _detect_ddp()
+    if is_ddp:
+        logging.info("Detected DDP environment (WORLD_SIZE=%d, LOCAL_RANK=%d)", world_size, local_rank)
+        if torch.cuda.is_available():
+            torch.cuda.set_device(local_rank)
+    else:
+        logging.info("No DDP environment variables detected; running in single-process mode")
+
+    classifier = EvenetLiteClassifier(class_labels=class_labels, **classifier_kwargs)
+
+    train_payload = (train_features, train_labels, train_weights)
+    val_payload = None
+    if val_features is not None and val_labels is not None:
+        val_payload = (val_features, val_labels, val_weights)
+
+    classifier.fit(
+        train_data=train_payload,
+        val_data=val_payload,
+        feature_names=feature_names,
+        normalization_rules=normalization_rules,
+        callbacks=callbacks,
+        epochs=epochs,
+        batch_size=batch_size,
+        sampler=sampler,
+        epoch_size=epoch_size,
+        checkpoint_path=checkpoint_path,
+        resume_from=resume_from,
+        checkpoint_every=checkpoint_every,
+        save_top_k=save_top_k,
+        monitor_metric=monitor_metric,
+        minimize_metric=minimize_metric,
+        debug=debug,
+    )
+    return classifier

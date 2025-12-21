@@ -161,6 +161,7 @@ class EvenetLiteClassifier:
         self.trainer: Optional[Trainer] = None
         self.normalizer: Optional[EvenetLiteNormalizer] = None
         self.feature_names: Optional[Dict[str, Iterable[str]]] = None
+        self.debug: bool = False
 
     def fit(
             self,
@@ -179,6 +180,7 @@ class EvenetLiteClassifier:
             save_top_k: int = 0,
             monitor_metric: str = "val_loss",
             minimize_metric: bool = True,
+            debug: bool = False,
     ) -> None:
         if feature_names is None:
             feature_names = copy.deepcopy(self.DEFAULT_FEATURE_NAMES)
@@ -203,7 +205,10 @@ class EvenetLiteClassifier:
         self.config.monitor_metric = monitor_metric
         self.config.minimize_metric = minimize_metric
 
-        self.trainer = Trainer(self.model, feature_names, self.config, callback_list, class_labels=self.class_labels)
+        self.debug = debug
+        self.trainer = Trainer(
+            self.model, feature_names, self.config, callback_list, class_labels=self.class_labels, debug=debug
+        )
         self.trainer.train(train_data, val_data, None, epochs, batch_size, sampler, epoch_size)
         norm_callback = next(cb for cb in self.trainer.callbacks if isinstance(cb, NormalizationCallback))
         self.normalizer = norm_callback.normalizer
@@ -238,7 +243,14 @@ class EvenetLiteClassifier:
         self.feature_names = feature_names
         if self.trainer is None:
             callbacks: List[Callback] = [NormalizationCallback()]
-            self.trainer = Trainer(self.model, feature_names, self.config, callbacks, class_labels=self.class_labels)
+            self.trainer = Trainer(
+                self.model,
+                feature_names,
+                self.config,
+                callbacks,
+                class_labels=self.class_labels,
+                debug=self.debug,
+            )
         self.trainer.restore_checkpoint(path, map_location=map_location)
         norm_callback = next((cb for cb in self.trainer.callbacks if isinstance(cb, NormalizationCallback)), None)
         if norm_callback is not None:

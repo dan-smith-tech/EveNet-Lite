@@ -12,6 +12,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
 
 from .callbacks import Callback, NormalizationCallback
+from .callbacks.debug import DebugCallback
 from .data import EvenetTensorDataset, build_sampler, DistributedWeightedSampler
 from .checkpoint import load_checkpoint, save_checkpoint
 from .metrics import calculate_physics_metrics, compute_accuracy, compute_loss, summarize_metrics
@@ -77,11 +78,15 @@ class Trainer:
         config: TrainerConfig,
         callbacks: Optional[List[Callback]] = None,
         class_labels: Optional[List[str]] = None,
+        debug: bool = False,
     ) -> None:
         self.model = model
         self.feature_names = feature_names
         self.config = config
         self.callbacks: List[Callback] = callbacks or []
+        self.debug = debug
+        if self.debug and not any(isinstance(cb, DebugCallback) for cb in self.callbacks):
+            self.callbacks.append(DebugCallback())
         self._init_distributed()
         self.device = self._resolve_device(config.device)
 
@@ -106,6 +111,10 @@ class Trainer:
         self.scheduler: Optional[Any] = None
         self.schedulers: List[Any] = []
         self._best_checkpoints: List[Tuple[float, str]] = []
+        self.train_sampler: Optional[Any] = None
+        self.val_sampler: Optional[Any] = None
+        self.train_loader: Optional[DataLoader] = None
+        self.val_loader: Optional[DataLoader] = None
 
     def _init_distributed(self) -> None:
         if dist.is_available() and not dist.is_initialized():
@@ -374,7 +383,7 @@ class Trainer:
         batch_size: int,
         sampler: Optional[str],
         epoch_size: Optional[int] = None,
-        ) -> None:
+    ) -> None:
         self.global_step = 0
         self.setup_datasets(train_data, val_data, test_data)
         # Insert normalization callback by default
@@ -397,6 +406,7 @@ class Trainer:
         )
 
         val_loader = None
+        val_sampler = None
         if self.val_dataset is not None:
             val_sampler = DistributedSampler(self.val_dataset, shuffle=False) if self.world_size > 1 else None
             val_loader = DataLoader(
@@ -407,6 +417,11 @@ class Trainer:
                 num_workers=self.config.num_workers,
             )
 
+        self.train_sampler = sampler_obj
+        self.val_sampler = val_loader.sampler if val_loader else None
+        self.train_loader = train_loader
+        self.val_loader = val_loader
+
         steps_per_epoch = max(1, len(train_loader))
         self._setup_optimizers_and_schedulers(epochs, steps_per_epoch)
 
@@ -416,7 +431,7 @@ class Trainer:
         for cb in self.callbacks:
             cb.on_train_start(self)
 
-        self._log_training_overview(train_loader, val_loader, sampler_obj, val_loader.sampler if val_loader else None, epochs)
+        self._log_training_overview(train_loader, val_loader, sampler_obj, val_sampler, epochs)
 
         for epoch in range(epochs):
             if isinstance(sampler_obj, (DistributedSampler, DistributedWeightedSampler)):
@@ -708,8 +723,11 @@ class Trainer:
                 )
                 epoch_weights.append(metric_weights)
 
+            batch_metrics = {"loss": loss.item(), "accuracy": batch_accuracy}
             for cb in self.callbacks:
-                cb.on_batch_end(self, epoch, batch_idx, {"features": features, "targets": targets}, loss.item())
+                cb.on_batch_end(
+                    self, epoch, batch_idx, {"features": features, "targets": targets}, loss.item(), batch_metrics
+                )
 
             if training:
                 self.global_step += 1
