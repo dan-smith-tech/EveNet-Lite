@@ -102,6 +102,7 @@ class Trainer:
 
         self.optimizer: Optional[torch.optim.Optimizer] = None
         self.optimizers: List[torch.optim.Optimizer] = []
+        self.optimizer_tags: List[str] = []
         self.scheduler: Optional[Any] = None
         self.schedulers: List[Any] = []
         self._best_checkpoints: List[Tuple[float, str]] = []
@@ -354,7 +355,7 @@ class Trainer:
             logging.info("Validation loader: None")
 
     def _setup_optimizers_and_schedulers(self, epochs: int) -> None:
-        self.optimizers, self.schedulers = build_optimizers_and_schedulers(
+        self.optimizers, self.schedulers, self.optimizer_tags = build_optimizers_and_schedulers(
             self.model, self.config, epochs, world_size=self.world_size
         )
         self.optimizer = self.optimizers[0] if self.optimizers else None
@@ -436,7 +437,12 @@ class Trainer:
                 merged.update({f"val_{k}": v for k, v in val_metrics.items()})
                 self._log_epoch_stdout(epoch, epochs, merged)
                 if self.wandb_run is not None:
-                    self.wandb_run.log({"epoch": epoch + 1, **merged})
+                    wandb_payload = {
+                        "epoch": epoch + 1,
+                        **self._format_wandb_epoch_metrics(train_metrics, val_metrics),
+                        **self._optimizer_learning_rates(),
+                    }
+                    self.wandb_run.log(wandb_payload)
             else:
                 merged = {}
 
@@ -733,9 +739,38 @@ class Trainer:
         if self.wandb_run is None or not self.is_rank_zero():
             return
         self.wandb_run.log(
-            {"train/loss": loss, "train/accuracy": accuracy, "epoch": epoch + 1},
+            {"train/loss": loss, "metrics/train_accuracy": accuracy, "epoch": epoch + 1},
             step=step,
         )
+
+    def _format_metric_group(self, metrics: Dict[str, float], prefix: str) -> Dict[str, float]:
+        formatted: Dict[str, float] = {}
+        for name, value in metrics.items():
+            key = f"{prefix}/{name}" if name in {"loss", "auc"} else f"metrics/{prefix}_{name}"
+            formatted[key] = value
+        return formatted
+
+    def _format_wandb_epoch_metrics(
+        self, train_metrics: Dict[str, float], val_metrics: Dict[str, float]
+    ) -> Dict[str, float]:
+        payload: Dict[str, float] = {}
+        payload.update(self._format_metric_group(train_metrics, "train"))
+        if val_metrics:
+            payload.update(self._format_metric_group(val_metrics, "val"))
+        return payload
+
+    def _optimizer_learning_rates(self) -> Dict[str, float]:
+        lr_logs: Dict[str, float] = {}
+        for tag, optimizer in zip(self.optimizer_tags, self.optimizers):
+            if optimizer is None:
+                continue
+            lrs = [group.get("lr") for group in optimizer.param_groups if "lr" in group]
+            for idx, lr in enumerate(lrs):
+                if lr is None:
+                    continue
+                key = f"Optimizer/{tag}-lr" if len(lrs) == 1 else f"Optimizer/{tag}-lr-{idx}"
+                lr_logs[key] = float(lr)
+        return lr_logs
 
     def _compute_epoch_physics_metrics(
         self,

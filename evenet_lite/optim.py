@@ -102,7 +102,7 @@ def default_scheduler_builder(config: Any, epochs: int) -> Callable[[torch.optim
 
 def build_optimizers_and_schedulers(
     model: torch.nn.Module, config: Any, epochs: int, world_size: int = 1
-) -> Tuple[List[torch.optim.Optimizer], List[Any]]:
+) -> Tuple[List[torch.optim.Optimizer], List[Any], List[str]]:
     body_modules, head_modules = resolve_module_groups(config)
     group_configs = [("body", body_modules), ("head", head_modules)]
 
@@ -111,6 +111,7 @@ def build_optimizers_and_schedulers(
 
     optimizers: List[torch.optim.Optimizer] = []
     schedulers: List[Any] = []
+    tags: List[str] = []
 
     for tag, modules in group_configs:
         params = _collect_parameters(model, modules)
@@ -140,5 +141,6 @@ def build_optimizers_and_schedulers(
             except TypeError:
                 continue
         schedulers.append(scheduler)
+        tags.append(tag)
 
-    return optimizers, schedulers
+    return optimizers, schedulers, tags
