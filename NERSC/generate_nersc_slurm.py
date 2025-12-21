@@ -34,7 +34,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("NERSC/submit_evenet_lite_multi.slurm"),
+        default=Path("submit_evenet_lite_multi.slurm"),
         help="Path to write the generated Slurm script",
     )
     parser.add_argument("--job-name", default="evenet-lite-grid", help="Slurm job name")
