@@ -1,5 +1,3 @@
-
-
 import logging
 import math
 from typing import Any, Callable, Iterable, List, Tuple
@@ -13,11 +11,16 @@ DEFAULT_BODY_MODULES: List[str] = ["GlobalEmbedding", "PET", "ObjectEncoder"]
 DEFAULT_HEAD_MODULES: List[str] = ["Classification"]
 
 
+def unwrap_model(model: torch.nn.Module):
+    return model.module if hasattr(model, "module") else model
+
+
 def _collect_parameters(model: torch.nn.Module, module_names: Iterable[str]) -> List[torch.nn.Parameter]:
     params: List[torch.nn.Parameter] = []
     seen: set[int] = set()
     for name in module_names:
-        module = getattr(model, name, None)
+        base_model = unwrap_model(model)
+        module = getattr(base_model, name, None)
         if module is None:
             logging.warning("Requested module '%s' not found on model; skipping.", name)
             continue
@@ -62,7 +65,7 @@ def resolve_group_weight_decay(config: Any, tag: str, world_size: int = 1) -> fl
 
 
 def default_optimizer_builder(
-    config: Any, world_size: int
+        config: Any, world_size: int
 ) -> Callable[[Iterable[torch.nn.Parameter], str], torch.optim.Optimizer]:
     def _builder(params: Iterable[torch.nn.Parameter], tag: str = "head") -> torch.optim.Optimizer:
         lr = resolve_group_lr(config, tag, world_size=world_size)
@@ -79,7 +82,7 @@ def _compute_warmup_epochs(config: Any, epochs: int) -> int:
 
 
 def default_scheduler_builder(
-    config: Any, epochs: int, steps_per_epoch: int | None = None
+        config: Any, epochs: int, steps_per_epoch: int | None = None
 ) -> Callable[[torch.optim.Optimizer, str], Any]:
     warmup_epochs = _compute_warmup_epochs(config, epochs)
     cosine_epochs = max(1, epochs - warmup_epochs)
@@ -102,8 +105,8 @@ def default_scheduler_builder(
                 step_clamped = min(step, warmup_iters + cosine_iters)
                 if warmup_iters > 0 and step_clamped < warmup_iters:
                     return config.warmup_start_factor + (
-                        (1 - config.warmup_start_factor)
-                        * (step_clamped / max(1, warmup_iters))
+                            (1 - config.warmup_start_factor)
+                            * (step_clamped / max(1, warmup_iters))
                     )
 
                 progress = (step_clamped - warmup_iters) / max(1, cosine_iters)
@@ -119,11 +122,11 @@ def default_scheduler_builder(
 
 
 def build_optimizers_and_schedulers(
-    model: torch.nn.Module,
-    config: Any,
-    epochs: int,
-    world_size: int = 1,
-    steps_per_epoch: int | None = None,
+        model: torch.nn.Module,
+        config: Any,
+        epochs: int,
+        world_size: int = 1,
+        steps_per_epoch: int | None = None,
 ) -> Tuple[List[torch.optim.Optimizer], List[Any], List[str]]:
     body_modules, head_modules = resolve_module_groups(config)
     group_configs = [("body", body_modules), ("head", head_modules)]
