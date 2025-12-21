@@ -440,7 +440,6 @@ class Trainer:
                     wandb_payload = {
                         "epoch": epoch + 1,
                         **self._format_wandb_epoch_metrics(train_metrics, val_metrics),
-                        **self._optimizer_learning_rates(),
                     }
                     self.wandb_run.log(wandb_payload)
             else:
@@ -739,7 +738,12 @@ class Trainer:
         if self.wandb_run is None or not self.is_rank_zero():
             return
         self.wandb_run.log(
-            {"train/loss": loss, "metrics/train_accuracy": accuracy, "epoch": epoch + 1},
+            {
+                "train/loss": loss,
+                "metrics/train_accuracy": accuracy,
+                "epoch": epoch + 1,
+                **self._optimizer_learning_rates(),
+            },
             step=step,
         )
 
