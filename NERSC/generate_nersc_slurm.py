@@ -122,6 +122,9 @@ def write_slurm_script(args: argparse.Namespace, signals: List[Tuple[str, str, s
 
     labels, train_globs, valid_globs = zip(*signals)
 
+    SCRIPT_DIR = Path(__file__).resolve().parent  # .../EveNet-Lite/NERSC
+    repo_root = SCRIPT_DIR.parent  # .../EveNet-Lite
+
     script = f"""#!/bin/bash -l
 #SBATCH --job-name={args.job_name}
 #SBATCH --time={args.time}
@@ -137,6 +140,7 @@ def write_slurm_script(args: argparse.Namespace, signals: List[Tuple[str, str, s
 
 set -euo pipefail
 
+export PYTHONPATH="{repo_root}:${{PYTHONPATH:-}}"
 export MASTER_ADDR=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n 1)
 DATA_ROOT="{args.data_root}"
 CHECKPOINT_ROOT="{args.checkpoint_root}"
