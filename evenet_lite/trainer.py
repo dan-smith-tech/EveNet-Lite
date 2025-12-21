@@ -251,10 +251,14 @@ class Trainer:
         self.test_dataset = EvenetTensorDataset(*test_data) if test_data is not None else None
 
     def _maybe_wrap_ddp(self) -> torch.nn.Module:
+        if isinstance(self.model, DDP):
+            return self.model
+
         model = self.model.to(self.device)
         if self.world_size > 1:
             if self.device.type == "cuda":
-                model = DDP(model, device_ids=[self.device])
+                device_id = self.device.index if self.device.index is not None else self.local_rank
+                model = DDP(model, device_ids=[device_id])
             else:
                 model = DDP(model)
         return model
