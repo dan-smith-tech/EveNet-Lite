@@ -1,11 +1,12 @@
 
 
-from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Tuple
 import logging
 import os
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+import numpy as np
 import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -524,7 +525,10 @@ class Trainer:
                     output_path=self.config.eval_output_path,
                 )
                 if self.is_rank_zero():
-                    logging.info("Evaluation metrics: %s", eval_metrics)
+                    logging.info(
+                        "Evaluation finished for test split; metrics available under keys: %s",
+                        ", ".join(sorted(eval_metrics.keys())),
+                    )
         finally:
             self._finalize_training()
 
@@ -1011,13 +1015,81 @@ class Trainer:
                 )
             )
 
+        saved_path = str(self._ensure_np_suffix(Path(output_path))) if output_path else None
+
         if output_path:
-            payload: Dict[str, torch.Tensor] = {k: v.cpu() for k, v in dataset.raw_features.items()}
-            payload["predictions"] = preds
-            payload["labels"] = labels
-            if weights is not None:
-                payload["sample_weights"] = weights
-            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-            torch.save(payload, output_path)
+            self._export_evaluation(
+                output_path=saved_path,
+                preds=preds,
+                labels=labels,
+                weights=weights,
+                raw_features=dataset.raw_features,
+                metrics=metrics,
+            )
+
+        total_entries = int(labels.shape[0])
+        sig_entries = int((labels == 1).sum().item()) if labels.numel() > 0 else 0
+        bkg_entries = total_entries - sig_entries
+
+        logging.info(
+            "Evaluation completed on %d entries (signal=%d, background=%d). Metrics saved%s",
+            total_entries,
+            sig_entries,
+            bkg_entries,
+            f" to {saved_path}" if saved_path else " in-memory",
+        )
 
         return metrics
+
+    def _ensure_np_suffix(self, path: Path) -> Path:
+        if path.suffix.lower() not in {".npz", ".npy"}:
+            return path.with_suffix(path.suffix + ".npz") if path.suffix else path.with_suffix(".npz")
+        return path
+
+    def _export_evaluation(
+        self,
+        *,
+        output_path: str,
+        preds: torch.Tensor,
+        labels: torch.Tensor,
+        weights: Optional[torch.Tensor],
+        raw_features: Dict[str, torch.Tensor],
+        metrics: Dict[str, float],
+    ) -> None:
+        base_path = self._ensure_np_suffix(Path(output_path))
+        base_path.parent.mkdir(parents=True, exist_ok=True)
+
+        preds_np = preds.cpu().numpy()
+        labels_np = labels.cpu().numpy()
+        weights_np = weights.cpu().numpy() if weights is not None else None
+        features_np = {k: v.cpu().numpy() for k, v in raw_features.items()}
+
+        metric_arrays = {f"metric_{k}": np.array(v, dtype=np.float32) for k, v in metrics.items()}
+
+        payload: Dict[str, np.ndarray] = {
+            **features_np,
+            "predictions": preds_np,
+            "labels": labels_np,
+            **({"sample_weights": weights_np} if weights_np is not None else {}),
+        }
+        payload.update(metric_arrays)
+        payload["num_entries"] = np.array(labels_np.shape[0], dtype=np.int64)
+
+        np.savez(base_path, **payload)
+
+        sig_mask = labels_np == 1
+        bkg_mask = labels_np == 0
+        suffixes = [("sig", sig_mask), ("bkg", bkg_mask)]
+        for name, mask in suffixes:
+            if mask.any():
+                class_payload: Dict[str, np.ndarray] = {
+                    **{k: v[mask] for k, v in features_np.items()},
+                    "predictions": preds_np[mask],
+                    "labels": labels_np[mask],
+                    **({"sample_weights": weights_np[mask]} if weights_np is not None else {}),
+                    "num_entries": np.array(mask.sum(), dtype=np.int64),
+                }
+                class_payload.update(metric_arrays)
+
+                class_path = base_path.with_name(f"{base_path.stem}-{name}{base_path.suffix}")
+                np.savez(class_path, **class_payload)
