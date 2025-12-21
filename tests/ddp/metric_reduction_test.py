@@ -1,6 +1,6 @@
 """Trainer metric reduction sanity test."""
 
-from __future__ import annotations
+
 
 from typing import Dict, Iterable, List, Optional
 

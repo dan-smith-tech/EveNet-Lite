@@ -1,6 +1,6 @@
 """DDP gradient synchronization sanity test."""
 
-from __future__ import annotations
+
 
 import torch
 from torch.nn.parallel import DistributedDataParallel as DDP

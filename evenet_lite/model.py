@@ -7,7 +7,7 @@ populated `evenet` submodule (e.g., via git submodule) so these imports
 resolve at runtime.
 """
 
-from __future__ import annotations
+
 
 from typing import List
 

@@ -18,7 +18,7 @@ Usage (CPU example)::
     python -m tests.ddp.test_main --test grad --world_size 2
 """
 
-from __future__ import annotations
+
 
 import argparse
 from typing import Callable, Dict
