@@ -972,9 +972,12 @@ class Trainer:
                 preds_tensor = preds_tensor[order]
 
                 # Remove any duplicated indices introduced by DistributedSampler padding
-                unique_indices, unique_positions = torch.unique_consecutive(index_tensor, return_index=True)
-                index_tensor = unique_indices
-                preds_tensor = preds_tensor[unique_positions]
+                if index_tensor.numel() > 0:
+                    unique_mask = torch.ones_like(index_tensor, dtype=torch.bool)
+                    unique_mask[1:] = index_tensor[1:] != index_tensor[:-1]
+                    unique_positions = torch.nonzero(unique_mask, as_tuple=False).squeeze(1)
+                    index_tensor = index_tensor[unique_positions]
+                    preds_tensor = preds_tensor[unique_positions]
 
         return preds_tensor, index_tensor
 
