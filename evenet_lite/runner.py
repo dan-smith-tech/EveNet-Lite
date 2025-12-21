@@ -14,6 +14,18 @@ def _detect_ddp() -> Tuple[bool, int, int]:
     return world_size > 1, world_size, local_rank
 
 
+def _configure_logging(log_level: int) -> None:
+    root_logger = logging.getLogger()
+    log_format = "%(asctime)s | %(levelname)s | %(message)s"
+    if not root_logger.handlers:
+        logging.basicConfig(level=log_level, format=log_format)
+    else:
+        for handler in root_logger.handlers:
+            handler.setFormatter(logging.Formatter(log_format))
+            handler.setLevel(log_level)
+    root_logger.setLevel(log_level)
+
+
 def run_evenet_lite_training(
     train_features: Dict[str, torch.Tensor],
     train_labels: torch.Tensor,
@@ -37,6 +49,7 @@ def run_evenet_lite_training(
     monitor_metric: str = "val_loss",
     minimize_metric: bool = True,
     debug: bool = False,
+    log_level: int = logging.INFO,
     **classifier_kwargs: Any,
 ) -> EvenetLiteClassifier:
     """Convenience entrypoint for running Evenet-Lite training on prepared tensors.
@@ -76,9 +89,13 @@ def run_evenet_lite_training(
         monitor_metric: Metric name used for checkpoint ranking.
         minimize_metric: Whether ``monitor_metric`` should be minimized.
         debug: Whether to enable verbose ``DebugCallback`` logging.
+        log_level: Logging level applied before runner diagnostics and forwarded
+            to the classifier when unspecified.
         **classifier_kwargs: Any additional arguments forwarded to
             :class:`EvenetLiteClassifier`.
     """
+
+    _configure_logging(log_level)
 
     is_ddp, world_size, local_rank = _detect_ddp()
     if is_ddp:
@@ -87,6 +104,9 @@ def run_evenet_lite_training(
             torch.cuda.set_device(local_rank)
     else:
         logging.info("No DDP environment variables detected; running in single-process mode")
+
+    if "log_level" not in classifier_kwargs:
+        classifier_kwargs["log_level"] = log_level
 
     classifier = EvenetLiteClassifier(class_labels=class_labels, **classifier_kwargs)
 

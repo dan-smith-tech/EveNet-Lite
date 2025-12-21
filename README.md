@@ -105,6 +105,8 @@ Key arguments to the runner:
   `Trainer`.
 * `debug`: toggles the rank-safe `DebugCallback` for logging sampler summaries,
   gradient norms, and batch/epoch metrics during training.
+* `log_level`: sets the logging verbosity before runner diagnostics and is
+  forwarded to the classifier when not explicitly provided.
 
 ### Data expectations
 
