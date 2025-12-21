@@ -62,7 +62,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--checkpoint-root",
         type=Path,
-        default=Path("/global/cfs/cdirs/m5019/avencast/Checkpoints/evenet-lite"),
+        default=Path("./checkpoints/"),
         help="Base directory where checkpoints will be stored per mass point",
     )
     parser.add_argument("--epochs", type=int, default=3, help="Training epochs")
