@@ -1028,11 +1028,13 @@ class Trainer:
                 )
             )
 
-        saved_path = str(self._ensure_np_suffix(Path(output_path))) if output_path else None
-
+        saved_description = None
         if output_path:
+            resolved_base = self._resolve_eval_base_path(Path(output_path))
+            saved_description = f"{resolved_base.parent} ({resolved_base.stem}-sig/-bkg{resolved_base.suffix})"
+
             self._export_evaluation(
-                output_path=saved_path,
+                base_path=resolved_base,
                 preds=preds,
                 labels=labels,
                 weights=weights,
@@ -1049,7 +1051,7 @@ class Trainer:
             total_entries,
             sig_entries,
             bkg_entries,
-            f" to {saved_path}" if saved_path else " in-memory",
+            f" to {saved_description}" if saved_description else " in-memory",
         )
 
         return metrics
@@ -1059,17 +1061,28 @@ class Trainer:
             return path.with_suffix(path.suffix + ".npz") if path.suffix else path.with_suffix(".npz")
         return path
 
+    def _resolve_eval_base_path(self, provided: Path) -> Path:
+        """Resolve eval output path to a base NPZ path.
+
+        If ``provided`` includes a numpy suffix, use it directly. Otherwise, treat it as a
+        directory and drop files named ``eval_output-sig.npz``/``eval_output-bkg.npz`` inside.
+        """
+
+        if provided.suffix.lower() in {".npz", ".npy"}:
+            return self._ensure_np_suffix(provided)
+        return provided.joinpath("eval_output.npz")
+
     def _export_evaluation(
         self,
         *,
-        output_path: str,
+        base_path: Path,
         preds: torch.Tensor,
         labels: torch.Tensor,
         weights: Optional[torch.Tensor],
         raw_features: Dict[str, torch.Tensor],
         metrics: Dict[str, float],
     ) -> None:
-        base_path = self._ensure_np_suffix(Path(output_path))
+        base_path = self._ensure_np_suffix(base_path)
         base_path.parent.mkdir(parents=True, exist_ok=True)
 
         preds_np = preds.cpu().numpy()
@@ -1085,17 +1098,6 @@ class Trainer:
                 )
 
         metric_arrays = {f"metric_{k}": np.array(v, dtype=np.float32) for k, v in metrics.items()}
-
-        payload: Dict[str, np.ndarray] = {
-            **features_np,
-            "predictions": preds_np,
-            "labels": labels_np,
-            **({"sample_weights": weights_np} if weights_np is not None else {}),
-        }
-        payload.update(metric_arrays)
-        payload["num_entries"] = np.array(labels_np.shape[0], dtype=np.int64)
-
-        np.savez(base_path, **payload)
 
         sig_mask = labels_np == 1
         bkg_mask = labels_np == 0
