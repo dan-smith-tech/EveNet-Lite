@@ -2,40 +2,36 @@
 #SBATCH --job-name=evenet-lite-ddp
 #SBATCH --time=00:10:00
 #SBATCH -C gpu
-#SBATCH --account=nstaff
+#SBATCH --account=m2616_g
 #SBATCH -q debug
 #SBATCH --nodes=2
 #SBATCH --ntasks-per-node=4
 #SBATCH --gpus-per-node=4
 #SBATCH --cpus-per-task=32
-#SBATCH --image=avencast/event:1.3
+#SBATCH --image=registry.nersc.gov/m2616/avencast/evenet:1.3
 
 set -euo pipefail
 
-SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 export MASTER_ADDR=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n 1)
 
 # Update these paths (or glob patterns) to point at your data inside the container or shared filesystem.
 # Example: TRAIN_SIG="/global/cfs/cdirs/.../data/NMSSM_*300*/evenet/train/*.pt"
-TRAIN_SIG="/path/to/train_signal.pt"
-TRAIN_BKG="/path/to/train_background.pt"
-VAL_SIG="/path/to/valid_signal.pt"
-VAL_BKG="/path/to/valid_background.pt"
+TRAIN_SIG="../data/46915_NMSSM_XToYHTo2B2Tau_MX-600_MY-300_TuneCP5_13TeV-madgraph-pythia8_RunIISummer20UL16NanoAODv9-106X_mcRun2_asymptotic_v17-v1_NANOAODSIM/evenet/train/skim_32F37BC4-BDDF-BF4F-91ED-3CF4F049586E.pt"
+TRAIN_BKG="../data/67993_TTToSemiLeptonic_TuneCP5_13TeV-powheg-pythia8_RunIISummer20UL16NanoAODv9-106X_mcRun2_asymptotic_v17-v1_NANOAODSIM/evenet/train/skim_0AFFFA0B-438F-0B4E-A74E-344E41B69B2D.pt"
+VAL_SIG="../data/46915_NMSSM_XToYHTo2B2Tau_MX-600_MY-300_TuneCP5_13TeV-madgraph-pythia8_RunIISummer20UL16NanoAODv9-106X_mcRun2_asymptotic_v17-v1_NANOAODSIM/evenet/valid/skim_32F37BC4-BDDF-BF4F-91ED-3CF4F049586E.pt"
+VAL_BKG="../data/67993_TTToSemiLeptonic_TuneCP5_13TeV-powheg-pythia8_RunIISummer20UL16NanoAODv9-106X_mcRun2_asymptotic_v17-v1_NANOAODSIM/evenet/valid/skim_0AFFFA0B-438F-0B4E-A74E-344E41B69B2D.pt"
 CHECKPOINT_DIR="/path/to/checkpoints"
 
-cmd="python ${SCRIPT_DIR}/train_multi_gpu.py \\
+cmd="python train_multi_gpu.py \\
   --train-sig \"${TRAIN_SIG}\" \\
   --train-bkg \"${TRAIN_BKG}\" \\
   --val-sig \"${VAL_SIG}\" \\
   --val-bkg \"${VAL_BKG}\" \\
-  --checkpoint-path ${CHECKPOINT_DIR} \\
   --sampler weighted \\
   --epochs 3 \\
   --batch-size 512 \\
-  --checkpoint-every 1 \\
-  --save-top-k 2 \\
   --debug"
 
 set -x
 srun -l shifter \
-  bash -c "source ${SCRIPT_DIR}/export_DDP_vars.sh && ${cmd}"
+  bash -c "source export_DDP_vars.sh && ${cmd}"

@@ -96,6 +96,23 @@ def main() -> None:
             _resolve_paths(args.val_bkg, "validation background"),
         )
 
+
+    classifier_config=dict(
+        body_lr=1e-4,
+        head_lr=1e-3,
+        weight_decay=1e-3,
+        grad_clip=1.0,
+        warmup_epochs=1,
+        warmup_ratio=0.1,
+        warmup_start_factor=0.1,
+        pretrained=False,
+        use_wandb=True,
+        wandb={
+            'project': 'EvenetLite',
+            'name': 'test',
+        }
+    )
+
     run_evenet_lite_training(
         train_features=train_features,
         train_labels=train_labels,
@@ -111,6 +128,7 @@ def main() -> None:
         save_top_k=args.save_top_k,
         debug=args.debug,
         log_level=log_level,
+        **classifier_config
     )
 
 
