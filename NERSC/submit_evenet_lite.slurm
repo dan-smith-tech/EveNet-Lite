@@ -30,6 +30,9 @@ cmd="python train_multi_gpu.py \\
   --sampler weighted \\
   --epochs 3 \\
   --batch-size 512 \\
+  --pretrained \\
+  --pretrained-path \"/global/cfs/cdirs/m5019/avencast/Checkpoints/checkpoints.20M.ablation.4.newcls/epoch=29_train=2.4809_val=2.5040.ckpt\" \\
+  --pretrained-source local \\
   --debug"
 
 set -x
