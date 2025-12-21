@@ -6,8 +6,6 @@ builds a Slurm array job that trains one model per mass point using
 ``train_multi_gpu.py``. Background datasets are configurable via CLI and are
 passed to all mass points.
 """
-from __future__ import annotations
-
 import argparse
 import re
 from pathlib import Path
@@ -179,7 +177,7 @@ cmd="python train_multi_gpu.py \\
 
 set -x
 srun -l shifter \\
-  bash -c "source export_DDP_vars.sh && ${cmd}"
+  bash -c "source export_DDP_vars.sh && \${{cmd}}"
 """
 
     args.output.write_text(script)
