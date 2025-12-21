@@ -336,7 +336,18 @@ class EvenetLiteClassifier:
         self.model.load_state_dict(filtered_state, strict=False)
 
         logger.info("======== Soft Load Summary ========")
-        logger.info("Loaded %d / %d layers", len(loaded_keys), len(model_state))
+        total_layers = len(model_state)
+        loaded_layers = len(loaded_keys)
+        load_ratio = loaded_layers / total_layers if total_layers > 0 else 0.0
+        fully_loaded = loaded_layers == total_layers and not (shape_mismatch_keys or missing_keys or unexpected_keys)
+
+        logger.info(
+            "Loaded %d / %d layers (%.1f%%)",
+            loaded_layers,
+            total_layers,
+            load_ratio * 100,
+        )
+        logger.info("All components loaded: %s", "YES" if fully_loaded else "NO")
 
         if loaded_keys:
             groups = Counter([k.split(".")[0] for k in loaded_keys])
