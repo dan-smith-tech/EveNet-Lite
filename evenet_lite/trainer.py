@@ -354,9 +354,13 @@ class Trainer:
         else:
             logging.info("Validation loader: None")
 
-    def _setup_optimizers_and_schedulers(self, epochs: int) -> None:
+    def _setup_optimizers_and_schedulers(self, epochs: int, steps_per_epoch: int) -> None:
         self.optimizers, self.schedulers, self.optimizer_tags = build_optimizers_and_schedulers(
-            self.model, self.config, epochs, world_size=self.world_size
+            self.model,
+            self.config,
+            epochs,
+            world_size=self.world_size,
+            steps_per_epoch=steps_per_epoch,
         )
         self.optimizer = self.optimizers[0] if self.optimizers else None
         self.scheduler = self.schedulers[0] if self.schedulers else None
@@ -378,14 +382,6 @@ class Trainer:
             self.callbacks.insert(0, NormalizationCallback())
 
         self.model = self._maybe_wrap_ddp()
-        self._setup_optimizers_and_schedulers(epochs)
-
-        if self.config.resume_from:
-            self.restore_checkpoint(self.config.resume_from)
-
-        for cb in self.callbacks:
-            cb.on_train_start(self)
-
         sampler_obj = build_sampler(sampler, self.train_dataset, self.train_dataset.sample_weights, epoch_size)
         if sampler_obj is None and self.world_size > 1:
             sampler_obj = DistributedSampler(self.train_dataset)
@@ -411,6 +407,15 @@ class Trainer:
                 num_workers=self.config.num_workers,
             )
 
+        steps_per_epoch = max(1, len(train_loader))
+        self._setup_optimizers_and_schedulers(epochs, steps_per_epoch)
+
+        if self.config.resume_from:
+            self.restore_checkpoint(self.config.resume_from)
+
+        for cb in self.callbacks:
+            cb.on_train_start(self)
+
         self._log_training_overview(train_loader, val_loader, sampler_obj, val_loader.sampler if val_loader else None, epochs)
 
         for epoch in range(epochs):
@@ -427,10 +432,6 @@ class Trainer:
                 val_metrics = self._run_epoch(self.model, val_loader, epoch, training=False)
             else:
                 val_metrics = {}
-
-            for scheduler in self.schedulers:
-                if scheduler:
-                    scheduler.step()
 
             if self.is_rank_zero():
                 merged = {f"train_{k}": v for k, v in train_metrics.items()}
@@ -679,6 +680,9 @@ class Trainer:
                         torch.nn.utils.clip_grad_norm_(model.parameters(), self.config.grad_clip)
                     for optimizer in optimizers:
                         optimizer.step()
+                    for scheduler in self.schedulers:
+                        if scheduler:
+                            scheduler.step()
 
             metric_sum["loss"] += loss.item() * targets.size(0)
             metric_count["loss"] += targets.size(0)

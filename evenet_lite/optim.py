@@ -77,37 +77,48 @@ def _compute_warmup_epochs(config: Any, epochs: int) -> int:
     return max(0, min(epochs, int(epochs * config.warmup_ratio)))
 
 
-def default_scheduler_builder(config: Any, epochs: int) -> Callable[[torch.optim.Optimizer, str], Any]:
+def default_scheduler_builder(
+    config: Any, epochs: int, steps_per_epoch: int | None = None
+) -> Callable[[torch.optim.Optimizer, str], Any]:
     warmup_epochs = _compute_warmup_epochs(config, epochs)
     cosine_epochs = max(1, epochs - warmup_epochs)
 
+    warmup_iters = warmup_epochs * steps_per_epoch if steps_per_epoch else warmup_epochs
+    cosine_iters = max(1, cosine_epochs * steps_per_epoch) if steps_per_epoch else max(1, cosine_epochs)
+
     def _builder(optimizer: torch.optim.Optimizer, tag: str = "head") -> Any:
         cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=cosine_epochs, eta_min=config.min_lr
+            optimizer, T_max=cosine_iters, eta_min=config.min_lr
         )
-        if warmup_epochs <= 0:
+        if warmup_iters <= 0:
             return cosine
 
         warmup = torch.optim.lr_scheduler.LinearLR(
             optimizer,
             start_factor=config.warmup_start_factor,
-            total_iters=warmup_epochs,
+            total_iters=warmup_iters,
         )
         return torch.optim.lr_scheduler.SequentialLR(
-            optimizer, schedulers=[warmup, cosine], milestones=[warmup_epochs]
+            optimizer, schedulers=[warmup, cosine], milestones=[warmup_iters]
         )
 
     return _builder
 
 
 def build_optimizers_and_schedulers(
-    model: torch.nn.Module, config: Any, epochs: int, world_size: int = 1
+    model: torch.nn.Module,
+    config: Any,
+    epochs: int,
+    world_size: int = 1,
+    steps_per_epoch: int | None = None,
 ) -> Tuple[List[torch.optim.Optimizer], List[Any], List[str]]:
     body_modules, head_modules = resolve_module_groups(config)
     group_configs = [("body", body_modules), ("head", head_modules)]
 
     optimizer_builder = config.optimizer_fn or default_optimizer_builder(config, world_size)
-    scheduler_builder = config.scheduler_fn or default_scheduler_builder(config, epochs)
+    scheduler_builder = config.scheduler_fn or default_scheduler_builder(
+        config, epochs, steps_per_epoch
+    )
 
     optimizers: List[torch.optim.Optimizer] = []
     schedulers: List[Any] = []
