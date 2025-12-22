@@ -919,6 +919,8 @@ class Trainer:
             weights=weights.cpu().numpy(),
             bins=self.config.physics_bins,
             min_bkg_events=self.config.sic_min_bkg_events,
+            log_plots=self.wandb_run is not None,
+            wandb_run=self.wandb_run,
         )
         return {"auc": metrics["auc"], "max_sic": metrics["max_sic"], "max_sic_unc": metrics["max_sic_unc"]}
 
@@ -1041,6 +1043,8 @@ class Trainer:
                     ),
                     bins=self.config.physics_bins,
                     min_bkg_events=self.config.sic_min_bkg_events,
+                    log_plots=self.wandb_run is not None,
+                    wandb_run=self.wandb_run,
                 )
             )
 

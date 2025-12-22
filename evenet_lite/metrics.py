@@ -93,15 +93,43 @@ def compute_sic_from_scores(
     weights: np.ndarray,
     edges: np.ndarray,
     min_bkg_events: int = 10,
-) -> Tuple[float, float, np.ndarray, np.ndarray]:
+) -> Dict[str, np.ndarray]:
+    """Compute SIC curve and related quantities on weighted scores.
+
+    The calculation follows::
+
+        SIC = ε_s / sqrt(ε_b) = ε_s * sqrt(1 / ε_b)
+
+    where ``ε_s`` and ``ε_b`` are the weighted signal and background efficiencies.
+    Background rejection is defined as ``1 / ε_b`` and its uncertainty is derived
+    from the cumulative sum of squared background weights.
+    """
+
+    if scores.size == 0:
+        empty = np.array([], dtype=float)
+        return {
+            "sig_eff": empty,
+            "bkg_eff": empty,
+            "bkg_eff_unc": empty,
+            "bkg_rej": empty,
+            "bkg_rej_unc": empty,
+            "sic": empty,
+            "sic_unc": empty,
+            "max_sic": 0.0,
+            "max_sic_unc": 0.0,
+            "best_idx": 0,
+        }
+
+    eps = 1e-12
+
     # Sort by score descending
     order = np.argsort(-scores)
     scores_sorted = scores[order]
     y_sorted = y_true[order]
     w_sorted = weights[order]
 
-    sig_mask = (y_sorted == 1)
-    bkg_mask = (y_sorted == 0)
+    sig_mask = y_sorted == 1
+    bkg_mask = y_sorted == 0
 
     # Cumulative weighted sums
     w_sig = w_sorted * sig_mask
@@ -115,99 +143,133 @@ def compute_sic_from_scores(
     total_sig = cum_sig[-1]
     total_bkg = cum_bkg[-1]
 
+    if total_sig <= 0 or total_bkg <= 0:
+        empty = np.zeros_like(edges, dtype=float)
+        return {
+            "sig_eff": empty,
+            "bkg_eff": empty,
+            "bkg_eff_unc": empty,
+            "bkg_rej": empty,
+            "bkg_rej_unc": empty,
+            "sic": empty,
+            "sic_unc": empty,
+            "max_sic": 0.0,
+            "max_sic_unc": 0.0,
+            "best_idx": 0,
+        }
+
     # Indices corresponding to score cuts
     idxs = np.searchsorted(-scores_sorted, -edges, side="left")
+    idxs = np.clip(idxs, 0, len(cum_sig) - 1)
 
     # Efficiencies at cuts
-    sig_eff = cum_sig[idxs] / (total_sig + 1e-12)
-    bkg_eff = cum_bkg[idxs] / (total_bkg + 1e-12)
+    sig_eff = cum_sig[idxs] / (total_sig + eps)
+    bkg_eff = cum_bkg[idxs] / (total_bkg + eps)
+    bkg_eff_unc = np.sqrt(cum_bkg2[idxs]) / (total_bkg + eps)
 
     # Raw background count at cuts (unweighted)
-    bkg_raw = np.searchsorted(
-        np.sort(scores[y_true == 0]), edges, side="left"
-    )
+    bkg_raw = np.searchsorted(np.sort(scores[y_true == 0]), edges, side="left")
     bkg_raw = bkg_mask.sum() - bkg_raw
 
     # Valid region
     valid = (bkg_eff > 0) & (bkg_raw >= min_bkg_events)
 
-    sic = np.zeros_like(sig_eff)
-    sic_unc = np.zeros_like(sig_eff)
+    sic = np.full_like(sig_eff, np.nan, dtype=float)
+    sic_unc = np.full_like(sig_eff, np.nan, dtype=float)
+    bkg_rej = np.full_like(sig_eff, np.nan, dtype=float)
+    bkg_rej_unc = np.full_like(sig_eff, np.nan, dtype=float)
 
-    # Background rejection and uncertainty
-    bkg_rej = np.zeros_like(bkg_eff)
     bkg_rej[valid] = 1.0 / bkg_eff[valid]
-
-    bkg_rej_unc = np.zeros_like(bkg_eff)
-    bkg_rej_unc[valid] = (
-        np.sqrt(cum_bkg2[idxs][valid]) / (total_bkg + 1e-12)
-    ) * bkg_rej[valid] ** 2
-
+    bkg_rej_unc[valid] = bkg_eff_unc[valid] * (bkg_rej[valid] ** 2)
     sic[valid] = sig_eff[valid] * np.sqrt(bkg_rej[valid])
     sic_unc[valid] = sig_eff[valid] * 0.5 / np.sqrt(bkg_rej[valid]) * bkg_rej_unc[valid]
 
-    idx_max = np.argmax(sic)
+    if np.any(valid):
+        best_idx = int(np.nanargmax(sic))
+        max_sic = float(sic[best_idx])
+        max_sic_unc = float(sic_unc[best_idx])
+    else:
+        best_idx = 0
+        max_sic = 0.0
+        max_sic_unc = 0.0
 
-    eff_s = np.asarray(tpr)
-    eff_b = np.asarray(fpr)
-    eff_b_unc = np.asarray(fpr_unc)
+    return {
+        "sig_eff": sig_eff,
+        "bkg_eff": bkg_eff,
+        "bkg_eff_unc": bkg_eff_unc,
+        "bkg_rej": bkg_rej,
+        "bkg_rej_unc": bkg_rej_unc,
+        "sic": sic,
+        "sic_unc": sic_unc,
+        "max_sic": max_sic,
+        "max_sic_unc": max_sic_unc,
+        "best_idx": best_idx,
+    }
 
-    bkg_rej = np.zeros_like(eff_b)
-    bkg_rej_unc = np.zeros_like(eff_b)
 
-    mask = eff_b > 0
-    bkg_rej[mask] = 1.0 / eff_b[mask]
-    bkg_rej_unc[mask] = eff_b_unc[mask] * (bkg_rej[mask] ** 2)
-
-    sic_vals = np.asarray(sic_vals)
-    sic_unc_vals = np.asarray(sic_unc_vals)
+def plot_sic_diagnostics(
+    targets: np.ndarray,
+    scores: np.ndarray,
+    weights: np.ndarray,
+    sic_result: Dict[str, np.ndarray],
+    *,
+    figsize: Tuple[int, int] = (12, 12),
+    dpi: int = 300,
+):
+    """Create a four-panel diagnostic plot for SIC-related curves."""
 
     import matplotlib.pyplot as plt
 
-    fig, axs = plt.subplots(2, 2, figsize=(12, 10))
+    fig, axs = plt.subplots(2, 2, figsize=figsize, dpi=dpi, constrained_layout=True)
 
-    # ─────────────────────────────
+    sig_eff = sic_result["sig_eff"]
+    bkg_eff = sic_result["bkg_eff"]
+    bkg_eff_unc = sic_result["bkg_eff_unc"]
+    sic = sic_result["sic"]
+    sic_unc = sic_result["sic_unc"]
+    bkg_rej = sic_result["bkg_rej"]
+    bkg_rej_unc = sic_result["bkg_rej_unc"]
+
+    valid_mask = np.isfinite(sic)
+
     # ROC curve
-    axs[0, 0].plot(eff_s, eff_b, lw=2)
+    axs[0, 0].plot(sig_eff, bkg_eff, lw=2, color="#1f77b4")
     axs[0, 0].set_ylabel("Background efficiency (FPR)")
     axs[0, 0].set_xlabel("Signal efficiency (TPR)")
-    axs[0, 0].grid(True)
     axs[0, 0].set_title("ROC curve")
 
-    # ─────────────────────────────
     # SIC vs signal efficiency
-    axs[0, 1].plot(eff_s, sic_vals, lw=2)
+    axs[0, 1].plot(sig_eff, sic, lw=2, color="#d62728")
     axs[0, 1].fill_between(
-        eff_s,
-        sic_vals - sic_unc_vals,
-        sic_vals + sic_unc_vals,
-        alpha=0.3,
+        sig_eff,
+        sic - sic_unc,
+        sic + sic_unc,
+        where=valid_mask,
+        color="#d62728",
+        alpha=0.2,
     )
     axs[0, 1].set_xlabel("Signal efficiency")
     axs[0, 1].set_ylabel("SIC")
-    axs[0, 1].grid(True)
     axs[0, 1].set_title("SIC vs signal efficiency")
 
-    # ─────────────────────────────
     # Background rejection
-    axs[1, 0].plot(eff_s, bkg_rej, lw=2)
+    axs[1, 0].plot(sig_eff, bkg_rej, lw=2, color="#2ca02c")
     axs[1, 0].fill_between(
-        eff_s,
+        sig_eff,
         bkg_rej - bkg_rej_unc,
         bkg_rej + bkg_rej_unc,
-        alpha=0.3,
+        where=valid_mask,
+        color="#2ca02c",
+        alpha=0.2,
     )
     axs[1, 0].set_xlabel("Signal efficiency")
     axs[1, 0].set_ylabel("Background rejection (1 / ε_b)")
     axs[1, 0].set_yscale("log")
-    axs[1, 0].grid(True)
     axs[1, 0].set_title("Background rejection")
 
-    # ─────────────────────────────
     # Score distributions (signal vs background)
-    sig_mask = (y_true == 1)
-    bkg_mask = (y_true == 0)
-
+    sig_mask = targets == 1
+    bkg_mask = targets == 0
     axs[1, 1].hist(
         scores[bkg_mask],
         bins=50,
@@ -216,8 +278,8 @@ def compute_sic_from_scores(
         density=True,
         label="Background",
         linewidth=2,
+        color="#1f77b4",
     )
-
     axs[1, 1].hist(
         scores[sig_mask],
         bins=50,
@@ -226,19 +288,20 @@ def compute_sic_from_scores(
         density=True,
         label="Signal",
         linewidth=2,
+        color="#d62728",
     )
-
     axs[1, 1].set_xlabel("Classifier score")
     axs[1, 1].set_ylabel("Normalized events")
-    axs[1, 1].set_yscale("log")  # optional but usually helpful
-    axs[1, 1].grid(True)
+    axs[1, 1].set_yscale("log")
     axs[1, 1].legend()
     axs[1, 1].set_title("Score distribution")
 
-    plt.tight_layout()
-    plt.show()
+    for ax in axs.flat:
+        ax.grid(True, alpha=0.3)
 
-    return sic[idx_max], sic_unc[idx_max], sic, sic_unc
+    fig.suptitle("SIC diagnostics", fontsize=14)
+
+    return fig
 
 
 def calculate_physics_metrics(
@@ -247,6 +310,8 @@ def calculate_physics_metrics(
     weights: np.ndarray,
     bins: int = 1000,
     min_bkg_events: int = 100,
+    log_plots: bool = False,
+    wandb_run: Optional[object] = None,
 ) -> Dict[str, np.ndarray]:
     """Calculates AUC and Max SIC with statistical uncertainty."""
 
@@ -258,7 +323,7 @@ def calculate_physics_metrics(
 
     edges = np.linspace(0, 1, bins + 1)
 
-    max_sic, max_sic_unc, sic, sic_unc = compute_sic_from_scores(
+    sic_result = compute_sic_from_scores(
         targets, scores, weights, edges, min_bkg_events=min_bkg_events
     )
 
@@ -267,14 +332,32 @@ def calculate_physics_metrics(
     except ValueError:
         auc_val = 0.5
 
-    return {
+    metrics = {
         "auc": float(auc_val),
-        "max_sic": float(max_sic),
-        "max_sic_unc": float(max_sic_unc),
-        "sic": sic,
-        "sic_unc": sic_unc,
+        "max_sic": float(sic_result["max_sic"]),
+        "max_sic_unc": float(sic_result["max_sic_unc"]),
+        "sic": sic_result["sic"],
+        "sic_unc": sic_result["sic_unc"],
         "edges": edges,
     }
+
+    if log_plots and wandb_run is not None:
+        fig = plot_sic_diagnostics(
+            targets=targets,
+            scores=scores,
+            weights=weights,
+            sic_result=sic_result,
+        )
+        try:
+            import wandb
+
+            wandb_run.log({"Physics/SIC": wandb.Image(fig)})
+        finally:
+            import matplotlib.pyplot as plt
+
+            plt.close(fig)
+
+    return metrics
 
 
 def summarize_metrics(accumulator: Dict[str, float], counts: Dict[str, int]) -> Dict[str, float]:
