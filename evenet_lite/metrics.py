@@ -94,37 +94,151 @@ def compute_sic_from_scores(
     edges: np.ndarray,
     min_bkg_events: int = 10,
 ) -> Tuple[float, float, np.ndarray, np.ndarray]:
-    fpr, tpr, fpr_unc = weighted_roc_curve(y_true, scores, weights, edges)
+    # Sort by score descending
+    order = np.argsort(-scores)
+    scores_sorted = scores[order]
+    y_sorted = y_true[order]
+    w_sorted = weights[order]
 
-    bkg_scores_all = scores[y_true == 0]
-    bkg_scores_sorted = np.sort(bkg_scores_all)
-    n_total_bkg = len(bkg_scores_sorted)
-    idxs = np.searchsorted(bkg_scores_sorted, edges, side="left")
-    n_bkg_pass_raw_arr = n_total_bkg - idxs
+    sig_mask = (y_sorted == 1)
+    bkg_mask = (y_sorted == 0)
 
-    sic_vals = []
-    sic_unc_vals = []
+    # Cumulative weighted sums
+    w_sig = w_sorted * sig_mask
+    w_bkg = w_sorted * bkg_mask
+    w_bkg2 = (w_sorted ** 2) * bkg_mask
 
-    for eff_s, eff_b, eff_b_unc, n_raw in zip(tpr, fpr, fpr_unc, n_bkg_pass_raw_arr):
-        if eff_b <= 0 or n_raw < min_bkg_events:
-            sic_vals.append(0.0)
-            sic_unc_vals.append(0.0)
-            continue
+    cum_sig = np.cumsum(w_sig)
+    cum_bkg = np.cumsum(w_bkg)
+    cum_bkg2 = np.cumsum(w_bkg2)
 
-        bkg_rej = 1.0 / eff_b
-        bkg_rej_unc = eff_b_unc * (bkg_rej ** 2)
+    total_sig = cum_sig[-1]
+    total_bkg = cum_bkg[-1]
 
-        sic, sic_unc = convert_to_SIC(sig_eff=eff_s, bkg_rej=bkg_rej, bkg_rej_unc=bkg_rej_unc)
+    # Indices corresponding to score cuts
+    idxs = np.searchsorted(-scores_sorted, -edges, side="left")
 
-        sic_vals.append(0.0 if sic is None else sic)
-        sic_unc_vals.append(0.0 if sic_unc is None else sic_unc)
+    # Efficiencies at cuts
+    sig_eff = cum_sig[idxs] / (total_sig + 1e-12)
+    bkg_eff = cum_bkg[idxs] / (total_bkg + 1e-12)
 
-    sic_vals = np.array(sic_vals)
-    sic_unc_vals = np.array(sic_unc_vals)
+    # Raw background count at cuts (unweighted)
+    bkg_raw = np.searchsorted(
+        np.sort(scores[y_true == 0]), edges, side="left"
+    )
+    bkg_raw = bkg_mask.sum() - bkg_raw
 
-    idx = np.argmax(sic_vals)
+    # Valid region
+    valid = (bkg_eff > 0) & (bkg_raw >= min_bkg_events)
 
-    return sic_vals[idx], sic_unc_vals[idx], sic_vals, sic_unc_vals
+    sic = np.zeros_like(sig_eff)
+    sic_unc = np.zeros_like(sig_eff)
+
+    # Background rejection and uncertainty
+    bkg_rej = np.zeros_like(bkg_eff)
+    bkg_rej[valid] = 1.0 / bkg_eff[valid]
+
+    bkg_rej_unc = np.zeros_like(bkg_eff)
+    bkg_rej_unc[valid] = (
+        np.sqrt(cum_bkg2[idxs][valid]) / (total_bkg + 1e-12)
+    ) * bkg_rej[valid] ** 2
+
+    sic[valid] = sig_eff[valid] * np.sqrt(bkg_rej[valid])
+    sic_unc[valid] = sig_eff[valid] * 0.5 / np.sqrt(bkg_rej[valid]) * bkg_rej_unc[valid]
+
+    idx_max = np.argmax(sic)
+
+    eff_s = np.asarray(tpr)
+    eff_b = np.asarray(fpr)
+    eff_b_unc = np.asarray(fpr_unc)
+
+    bkg_rej = np.zeros_like(eff_b)
+    bkg_rej_unc = np.zeros_like(eff_b)
+
+    mask = eff_b > 0
+    bkg_rej[mask] = 1.0 / eff_b[mask]
+    bkg_rej_unc[mask] = eff_b_unc[mask] * (bkg_rej[mask] ** 2)
+
+    sic_vals = np.asarray(sic_vals)
+    sic_unc_vals = np.asarray(sic_unc_vals)
+
+    import matplotlib.pyplot as plt
+
+    fig, axs = plt.subplots(2, 2, figsize=(12, 10))
+
+    # ─────────────────────────────
+    # ROC curve
+    axs[0, 0].plot(eff_s, eff_b, lw=2)
+    axs[0, 0].set_ylabel("Background efficiency (FPR)")
+    axs[0, 0].set_xlabel("Signal efficiency (TPR)")
+    axs[0, 0].grid(True)
+    axs[0, 0].set_title("ROC curve")
+
+    # ─────────────────────────────
+    # SIC vs signal efficiency
+    axs[0, 1].plot(eff_s, sic_vals, lw=2)
+    axs[0, 1].fill_between(
+        eff_s,
+        sic_vals - sic_unc_vals,
+        sic_vals + sic_unc_vals,
+        alpha=0.3,
+    )
+    axs[0, 1].set_xlabel("Signal efficiency")
+    axs[0, 1].set_ylabel("SIC")
+    axs[0, 1].grid(True)
+    axs[0, 1].set_title("SIC vs signal efficiency")
+
+    # ─────────────────────────────
+    # Background rejection
+    axs[1, 0].plot(eff_s, bkg_rej, lw=2)
+    axs[1, 0].fill_between(
+        eff_s,
+        bkg_rej - bkg_rej_unc,
+        bkg_rej + bkg_rej_unc,
+        alpha=0.3,
+    )
+    axs[1, 0].set_xlabel("Signal efficiency")
+    axs[1, 0].set_ylabel("Background rejection (1 / ε_b)")
+    axs[1, 0].set_yscale("log")
+    axs[1, 0].grid(True)
+    axs[1, 0].set_title("Background rejection")
+
+    # ─────────────────────────────
+    # Score distributions (signal vs background)
+    sig_mask = (y_true == 1)
+    bkg_mask = (y_true == 0)
+
+    axs[1, 1].hist(
+        scores[bkg_mask],
+        bins=50,
+        weights=weights[bkg_mask] if weights is not None else None,
+        histtype="step",
+        density=True,
+        label="Background",
+        linewidth=2,
+    )
+
+    axs[1, 1].hist(
+        scores[sig_mask],
+        bins=50,
+        weights=weights[sig_mask] if weights is not None else None,
+        histtype="step",
+        density=True,
+        label="Signal",
+        linewidth=2,
+    )
+
+    axs[1, 1].set_xlabel("Classifier score")
+    axs[1, 1].set_ylabel("Normalized events")
+    axs[1, 1].set_yscale("log")  # optional but usually helpful
+    axs[1, 1].grid(True)
+    axs[1, 1].legend()
+    axs[1, 1].set_title("Score distribution")
+
+    plt.tight_layout()
+    plt.show()
+
+    return sic[idx_max], sic_unc[idx_max], sic, sic_unc
 
 
 def calculate_physics_metrics(
