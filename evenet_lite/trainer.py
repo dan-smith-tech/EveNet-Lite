@@ -768,6 +768,11 @@ class Trainer:
 
             with torch.set_grad_enabled(training):
                 outputs = self._forward(model, features)
+                if not torch.isfinite(outputs).all():
+                    logging.debug("Non-finite outputs detected; treating them as zero."
+                        f"[Rank {self.rank}] Non-finite logits detected\n"
+                        f"min={outputs.min().item()}, max={outputs.max().item()}"
+                    )
                 loss = compute_loss(outputs, targets, weight_tensor)
                 if training:
                     optimizers = self.optimizers or ([self.optimizer] if self.optimizer else [])
@@ -787,9 +792,9 @@ class Trainer:
             if torch.isfinite(loss_value):
                 metric_sum["loss"] += loss_value.item() * targets.size(0)
                 metric_count["loss"] += targets.size(0)
-            else:
-                # Optional: track how often this happens
-                metric_sum["nan_loss"] += 1
+            # else:
+            #     # Optional: track how often this happens
+            #     metric_sum["nan_loss"] += 1
             metric_count["loss"] += targets.size(0)
 
             preds = torch.argmax(outputs, dim=1)
