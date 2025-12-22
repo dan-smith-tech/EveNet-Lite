@@ -760,7 +760,11 @@ class Trainer:
             weight_tensor: Optional[torch.Tensor] = None
             if weights is not None:
                 weights = weights.to(self.device)
-                weight_tensor = None if torch.any(torch.isinf(weights)) else weights
+                finite_mask = torch.isfinite(weights)
+                # Zero-out any non-finite weights to avoid NaNs in the loss
+                weight_tensor = torch.where(finite_mask, weights, torch.zeros_like(weights))
+                if not torch.all(finite_mask):
+                    logging.debug("Non-finite weights detected; treating them as zero during loss computation.")
 
             with torch.set_grad_enabled(training):
                 outputs = self._forward(model, features)
