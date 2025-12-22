@@ -782,7 +782,14 @@ class Trainer:
                         if scheduler:
                             scheduler.step()
 
-            metric_sum["loss"] += loss.item() * targets.size(0)
+            loss_value = loss.detach()
+
+            if torch.isfinite(loss_value):
+                metric_sum["loss"] += loss_value.item() * targets.size(0)
+                metric_count["loss"] += targets.size(0)
+            else:
+                # Optional: track how often this happens
+                metric_sum["nan_loss"] += 1
             metric_count["loss"] += targets.size(0)
 
             preds = torch.argmax(outputs, dim=1)
