@@ -5,8 +5,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from scipy.special import expit, softmax
 from sklearn.metrics import roc_auc_score
-
 
 def compute_loss(logits: torch.Tensor, targets: torch.Tensor, weights: Optional[torch.Tensor]) -> torch.Tensor:
     per_sample = F.cross_entropy(logits, targets, reduction="none")
@@ -128,7 +128,7 @@ def compute_sic_from_scores(
 
 
 def calculate_physics_metrics(
-    probs: np.ndarray,
+    logits: np.ndarray,
     targets: np.ndarray,
     weights: np.ndarray,
     bins: int = 1000,
@@ -136,10 +136,11 @@ def calculate_physics_metrics(
 ) -> Dict[str, np.ndarray]:
     """Calculates AUC and Max SIC with statistical uncertainty."""
 
-    if probs.ndim > 1:
-        scores = probs[:, 1]
+    # Convert logits → scores
+    if logits.ndim == 1 or logits.shape[1] == 1:
+        scores = expit(logits.reshape(-1))
     else:
-        scores = probs
+        scores = softmax(logits, axis=1)[:, 1]
 
     edges = np.linspace(0, 1, bins + 1)
 

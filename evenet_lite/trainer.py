@@ -902,7 +902,7 @@ class Trainer:
             return {}
 
         metrics = calculate_physics_metrics(
-            probs=probs.cpu().numpy(),
+            logits=probs.cpu().numpy(),
             targets=targets.cpu().numpy(),
             weights=weights.cpu().numpy(),
             bins=self.config.physics_bins,
@@ -1020,7 +1020,7 @@ class Trainer:
         if self.config.compute_physics_metrics and preds.numel() > 0:
             metrics.update(
                 calculate_physics_metrics(
-                    probs=preds.numpy(),
+                    logits=preds.numpy(),
                     targets=labels.numpy(),
                     weights=(
                         weights.numpy()
