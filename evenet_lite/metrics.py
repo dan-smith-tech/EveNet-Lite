@@ -176,6 +176,13 @@ def compute_sic_from_scores(
     # Valid region
     valid = (bkg_eff > 0) & (bkg_raw >= min_bkg_events)
 
+    # Full curves (without the minimum-background cut) for plotting
+    bkg_rej_full = np.full_like(sig_eff, np.nan, dtype=float)
+    sic_full = np.full_like(sig_eff, np.nan, dtype=float)
+    positive_bkg = bkg_eff > 0
+    bkg_rej_full[positive_bkg] = 1.0 / bkg_eff[positive_bkg]
+    sic_full[positive_bkg] = sig_eff[positive_bkg] * np.sqrt(bkg_rej_full[positive_bkg])
+
     sic = np.full_like(sig_eff, np.nan, dtype=float)
     sic_unc = np.full_like(sig_eff, np.nan, dtype=float)
     bkg_rej = np.full_like(sig_eff, np.nan, dtype=float)
@@ -195,6 +202,10 @@ def compute_sic_from_scores(
         max_sic = 0.0
         max_sic_unc = 0.0
 
+    min_bkg_idx = None
+    if np.any(bkg_raw >= min_bkg_events):
+        min_bkg_idx = int(np.argmax(bkg_raw >= min_bkg_events))
+
     return {
         "sig_eff": sig_eff,
         "bkg_eff": bkg_eff,
@@ -203,6 +214,10 @@ def compute_sic_from_scores(
         "bkg_rej_unc": bkg_rej_unc,
         "sic": sic,
         "sic_unc": sic_unc,
+        "sic_full": sic_full,
+        "bkg_rej_full": bkg_rej_full,
+        "valid_mask": valid,
+        "min_bkg_idx": min_bkg_idx,
         "max_sic": max_sic,
         "max_sic_unc": max_sic_unc,
         "best_idx": best_idx,
@@ -231,8 +246,14 @@ def plot_sic_diagnostics(
     sic_unc = sic_result["sic_unc"]
     bkg_rej = sic_result["bkg_rej"]
     bkg_rej_unc = sic_result["bkg_rej_unc"]
+    sic_full = sic_result.get("sic_full", sic)
+    bkg_rej_full = sic_result.get("bkg_rej_full", bkg_rej)
+    valid_mask = sic_result.get("valid_mask", np.isfinite(sic))
+    min_bkg_idx = sic_result.get("min_bkg_idx")
 
-    valid_mask = np.isfinite(sic)
+    min_bkg_line_x = None
+    if min_bkg_idx is not None:
+        min_bkg_line_x = float(sig_eff[min_bkg_idx])
 
     # ROC curve
     axs[0, 0].plot(sig_eff, bkg_eff, lw=2, color="#1f77b4")
@@ -241,6 +262,7 @@ def plot_sic_diagnostics(
     axs[0, 0].set_title("ROC curve")
     axs[0, 0].set_xlim(0.0, 1.0)
     # SIC vs signal efficiency
+    axs[0, 1].plot(sig_eff, sic_full, lw=2, color="#d62728", alpha=0.5)
     axs[0, 1].plot(sig_eff, sic, lw=2, color="#d62728")
     axs[0, 1].fill_between(
         sig_eff,
@@ -255,6 +277,7 @@ def plot_sic_diagnostics(
     axs[0, 1].set_title("SIC vs signal efficiency")
     axs[0, 1].set_xlim(0.0, 1.0)
     # Background rejection
+    axs[1, 0].plot(sig_eff, bkg_rej_full, lw=2, color="#2ca02c", alpha=0.5)
     axs[1, 0].plot(sig_eff, bkg_rej, lw=2, color="#2ca02c")
     axs[1, 0].fill_between(
         sig_eff,
@@ -298,6 +321,14 @@ def plot_sic_diagnostics(
     axs[1, 1].legend()
     axs[1, 1].set_title("Score distribution")
     axs[1, 1].set_xlim(0.0, 1.0)
+
+    if min_bkg_line_x is not None:
+        for ax in axs[:2, :2].flat:
+            ax.axvline(min_bkg_line_x, color="black", linestyle="--", alpha=0.7, label="min bkg cut")
+        axs[0, 0].legend(loc="lower right")
+        axs[0, 1].legend(loc="upper right")
+        axs[1, 0].legend(loc="upper right")
+
     for ax in axs.flat:
         ax.grid(True, alpha=0.3)
 
