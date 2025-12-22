@@ -202,9 +202,12 @@ def compute_sic_from_scores(
         max_sic = 0.0
         max_sic_unc = 0.0
 
-    min_bkg_idx = None
-    if np.any(bkg_raw >= min_bkg_events):
-        min_bkg_idx = int(np.argmax(bkg_raw >= min_bkg_events))
+    valid = (bkg_raw >= min_bkg_events)
+
+    if not np.any(valid):
+        min_bkg_idx = None  # or raise / handle gracefully
+    else:
+        min_bkg_idx = np.where(valid)[0][-1]
 
     return {
         "sig_eff": sig_eff,
@@ -229,6 +232,7 @@ def plot_sic_diagnostics(
         scores: np.ndarray,
         weights: np.ndarray,
         sic_result: Dict[str, np.ndarray],
+        min_bkg_events: int = 0,
         *,
         figsize: Tuple[int, int] = (12, 12),
         dpi: int = 300,
@@ -324,7 +328,7 @@ def plot_sic_diagnostics(
 
     if min_bkg_line_x is not None:
         for ax in axs[:2, :2].flat:
-            ax.axvline(min_bkg_line_x, color="black", linestyle="--", alpha=0.7, label="min bkg cut")
+            ax.axvline(min_bkg_line_x, color="gray", linestyle="--", alpha=0.5, label=f"bkg={min_bkg_events:5d}")
         axs[0, 0].legend(loc="lower right")
         axs[0, 1].legend(loc="upper right")
         axs[1, 0].legend(loc="upper right")
@@ -381,6 +385,7 @@ def calculate_physics_metrics(
             scores=scores,
             weights=weights,
             sic_result=sic_result,
+            min_bkg_events=min_bkg_events,
         )
         try:
             import wandb
