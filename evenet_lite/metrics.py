@@ -8,6 +8,7 @@ import torch.nn.functional as F
 from scipy.special import expit, softmax
 from sklearn.metrics import roc_auc_score
 
+
 def compute_loss(logits: torch.Tensor, targets: torch.Tensor, weights: Optional[torch.Tensor]) -> torch.Tensor:
     per_sample = F.cross_entropy(logits, targets, reduction="none")
     if weights is not None:
@@ -23,12 +24,12 @@ def compute_accuracy(logits: torch.Tensor, targets: torch.Tensor) -> float:
 
 
 def weighted_roc_curve(
-    y_true: np.ndarray,
-    y_score: np.ndarray,
-    sample_weight: np.ndarray,
-    bin_edges: Optional[np.ndarray] = None,
-    n_points: int = 1000,
-    safe_eps: float = 1e-6,
+        y_true: np.ndarray,
+        y_score: np.ndarray,
+        sample_weight: np.ndarray,
+        bin_edges: Optional[np.ndarray] = None,
+        n_points: int = 1000,
+        safe_eps: float = 1e-6,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     # Sort by score descending
     sorted_idx = np.argsort(-y_score)
@@ -72,7 +73,8 @@ def weighted_roc_curve(
     return fpr_interp, tpr_uniform, sigma_fpr_interp
 
 
-def convert_to_SIC(sig_eff: float, bkg_rej: float, bkg_rej_unc: Optional[float] = None) -> Tuple[Optional[float], Optional[float]]:
+def convert_to_SIC(sig_eff: float, bkg_rej: float, bkg_rej_unc: Optional[float] = None) -> Tuple[
+    Optional[float], Optional[float]]:
     """Convert background rejection to SIC and propagate uncertainty."""
 
     if bkg_rej <= 0:
@@ -88,11 +90,11 @@ def convert_to_SIC(sig_eff: float, bkg_rej: float, bkg_rej_unc: Optional[float] 
 
 
 def compute_sic_from_scores(
-    y_true: np.ndarray,
-    scores: np.ndarray,
-    weights: np.ndarray,
-    edges: np.ndarray,
-    min_bkg_events: int = 10,
+        y_true: np.ndarray,
+        scores: np.ndarray,
+        weights: np.ndarray,
+        edges: np.ndarray,
+        min_bkg_events: int = 10,
 ) -> Dict[str, np.ndarray]:
     """Compute SIC curve and related quantities on weighted scores.
 
@@ -208,13 +210,13 @@ def compute_sic_from_scores(
 
 
 def plot_sic_diagnostics(
-    targets: np.ndarray,
-    scores: np.ndarray,
-    weights: np.ndarray,
-    sic_result: Dict[str, np.ndarray],
-    *,
-    figsize: Tuple[int, int] = (12, 12),
-    dpi: int = 300,
+        targets: np.ndarray,
+        scores: np.ndarray,
+        weights: np.ndarray,
+        sic_result: Dict[str, np.ndarray],
+        *,
+        figsize: Tuple[int, int] = (12, 12),
+        dpi: int = 300,
 ):
     """Create a four-panel diagnostic plot for SIC-related curves."""
 
@@ -237,7 +239,7 @@ def plot_sic_diagnostics(
     axs[0, 0].set_ylabel("Background efficiency (FPR)")
     axs[0, 0].set_xlabel("Signal efficiency (TPR)")
     axs[0, 0].set_title("ROC curve")
-
+    axs[0, 0].set_xlim(0.0, 1.0)
     # SIC vs signal efficiency
     axs[0, 1].plot(sig_eff, sic, lw=2, color="#d62728")
     axs[0, 1].fill_between(
@@ -251,7 +253,7 @@ def plot_sic_diagnostics(
     axs[0, 1].set_xlabel("Signal efficiency")
     axs[0, 1].set_ylabel("SIC")
     axs[0, 1].set_title("SIC vs signal efficiency")
-
+    axs[0, 1].set_xlim(0.0, 1.0)
     # Background rejection
     axs[1, 0].plot(sig_eff, bkg_rej, lw=2, color="#2ca02c")
     axs[1, 0].fill_between(
@@ -266,7 +268,7 @@ def plot_sic_diagnostics(
     axs[1, 0].set_ylabel("Background rejection (1 / ε_b)")
     axs[1, 0].set_yscale("log")
     axs[1, 0].set_title("Background rejection")
-
+    axs[1, 0].set_xlim(0.0, 1.0)
     # Score distributions (signal vs background)
     sig_mask = targets == 1
     bkg_mask = targets == 0
@@ -295,7 +297,7 @@ def plot_sic_diagnostics(
     axs[1, 1].set_yscale("log")
     axs[1, 1].legend()
     axs[1, 1].set_title("Score distribution")
-
+    axs[1, 1].set_xlim(0.0, 1.0)
     for ax in axs.flat:
         ax.grid(True, alpha=0.3)
 
@@ -305,13 +307,14 @@ def plot_sic_diagnostics(
 
 
 def calculate_physics_metrics(
-    logits: np.ndarray,
-    targets: np.ndarray,
-    weights: np.ndarray,
-    bins: int = 1000,
-    min_bkg_events: int = 100,
-    log_plots: bool = False,
-    wandb_run: Optional[object] = None,
+        logits: np.ndarray,
+        targets: np.ndarray,
+        weights: np.ndarray,
+        training: bool,
+        bins: int = 1000,
+        min_bkg_events: int = 100,
+        log_plots: bool = False,
+        wandb_run: Optional[object] = None,
 ) -> Dict[str, np.ndarray]:
     """Calculates AUC and Max SIC with statistical uncertainty."""
 
@@ -351,7 +354,12 @@ def calculate_physics_metrics(
         try:
             import wandb
 
-            wandb_run.log({"Physics/SIC": wandb.Image(fig)})
+            if training:
+                log_name = "Physics/train-SIC"
+            else:
+                log_name = "Physics/valid-SIC"
+
+            wandb_run.log({log_name: wandb.Image(fig)})
         finally:
             import matplotlib.pyplot as plt
 

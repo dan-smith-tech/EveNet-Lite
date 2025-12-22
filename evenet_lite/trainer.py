@@ -1,5 +1,3 @@
-
-
 import logging
 import os
 from dataclasses import dataclass
@@ -80,13 +78,13 @@ class TrainerConfig:
 
 class Trainer:
     def __init__(
-        self,
-        model: torch.nn.Module,
-        feature_names: Dict[str, Iterable[str]],
-        config: TrainerConfig,
-        callbacks: Optional[List[Callback]] = None,
-        class_labels: Optional[List[str]] = None,
-        debug: bool = False,
+            self,
+            model: torch.nn.Module,
+            feature_names: Dict[str, Iterable[str]],
+            config: TrainerConfig,
+            callbacks: Optional[List[Callback]] = None,
+            class_labels: Optional[List[str]] = None,
+            debug: bool = False,
     ) -> None:
         self.model = model
         self.feature_names = feature_names
@@ -258,10 +256,10 @@ class Trainer:
         return tensor.item()
 
     def setup_datasets(
-        self,
-        train_data: Tuple[Dict[str, torch.Tensor], torch.Tensor, Optional[torch.Tensor]],
-        val_data: Optional[Tuple[Dict[str, torch.Tensor], torch.Tensor, Optional[torch.Tensor]]],
-        test_data: Optional[Tuple[Dict[str, torch.Tensor], torch.Tensor, Optional[torch.Tensor]]],
+            self,
+            train_data: Tuple[Dict[str, torch.Tensor], torch.Tensor, Optional[torch.Tensor]],
+            val_data: Optional[Tuple[Dict[str, torch.Tensor], torch.Tensor, Optional[torch.Tensor]]],
+            test_data: Optional[Tuple[Dict[str, torch.Tensor], torch.Tensor, Optional[torch.Tensor]]],
     ) -> None:
         X_train, y_train, w_train = train_data
         self.train_dataset = EvenetTensorDataset(X_train, y_train, w_train)
@@ -341,12 +339,12 @@ class Trainer:
         logging.info("Class distribution for %s -> %s", name, " | ".join(parts))
 
     def _log_training_overview(
-        self,
-        train_loader: DataLoader,
-        val_loader: Optional[DataLoader],
-        train_sampler: Optional[Any],
-        val_sampler: Optional[Any],
-        epochs: int,
+            self,
+            train_loader: DataLoader,
+            val_loader: Optional[DataLoader],
+            train_sampler: Optional[Any],
+            val_sampler: Optional[Any],
+            epochs: int,
     ) -> None:
         if not self.is_rank_zero():
             return
@@ -387,14 +385,14 @@ class Trainer:
         self.scheduler = self.schedulers[0] if self.schedulers else None
 
     def train(
-        self,
-        train_data: Tuple[Dict[str, torch.Tensor], torch.Tensor, Optional[torch.Tensor]],
-        val_data: Optional[Tuple[Dict[str, torch.Tensor], torch.Tensor, Optional[torch.Tensor]]],
-        test_data: Optional[Tuple[Dict[str, torch.Tensor], torch.Tensor, Optional[torch.Tensor]]],
-        epochs: int,
-        batch_size: int,
-        sampler: Optional[str],
-        epoch_size: Optional[int] = None,
+            self,
+            train_data: Tuple[Dict[str, torch.Tensor], torch.Tensor, Optional[torch.Tensor]],
+            val_data: Optional[Tuple[Dict[str, torch.Tensor], torch.Tensor, Optional[torch.Tensor]]],
+            test_data: Optional[Tuple[Dict[str, torch.Tensor], torch.Tensor, Optional[torch.Tensor]]],
+            epochs: int,
+            batch_size: int,
+            sampler: Optional[str],
+            epoch_size: Optional[int] = None,
     ) -> None:
         try:
             self.global_step = 0
@@ -720,11 +718,11 @@ class Trainer:
         return prepared
 
     def _run_epoch(
-        self,
-        model: torch.nn.Module,
-        loader: DataLoader,
-        epoch: int,
-        training: bool,
+            self,
+            model: torch.nn.Module,
+            loader: DataLoader,
+            epoch: int,
+            training: bool,
     ) -> Dict[str, float]:
         if training:
             model.train()
@@ -770,9 +768,9 @@ class Trainer:
                 outputs = self._forward(model, features)
                 if not torch.isfinite(outputs).all():
                     logging.debug("Non-finite outputs detected; treating them as zero."
-                        f"[Rank {self.rank}] Non-finite logits detected\n"
-                        f"min={outputs.min().item()}, max={outputs.max().item()}"
-                    )
+                                  f"[Rank {self.rank}] Non-finite logits detected\n"
+                                  f"min={outputs.min().item()}, max={outputs.max().item()}"
+                                  )
                 loss = compute_loss(outputs, targets, weight_tensor)
                 if training:
                     optimizers = self.optimizers or ([self.optimizer] if self.optimizer else [])
@@ -846,7 +844,9 @@ class Trainer:
             metrics["accuracy"] = float(metric_tracker.compute().item())
 
         if self.config.compute_physics_metrics and epoch_probs:
-            metrics.update(self._compute_epoch_physics_metrics(epoch_probs, epoch_targets, epoch_weights))
+            metrics.update(
+                self._compute_epoch_physics_metrics(epoch_probs, epoch_targets, epoch_weights, training=training)
+            )
         if progress is not None:
             progress.close()
         return metrics
@@ -872,7 +872,7 @@ class Trainer:
         return formatted
 
     def _format_wandb_epoch_metrics(
-        self, train_metrics: Dict[str, float], val_metrics: Dict[str, float]
+            self, train_metrics: Dict[str, float], val_metrics: Dict[str, float]
     ) -> Dict[str, float]:
         payload: Dict[str, float] = {}
         payload.update(self._format_metric_group(train_metrics, "train"))
@@ -894,10 +894,11 @@ class Trainer:
         return lr_logs
 
     def _compute_epoch_physics_metrics(
-        self,
-        probs_list: List[torch.Tensor],
-        targets_list: List[torch.Tensor],
-        weights_list: List[torch.Tensor],
+            self,
+            probs_list: List[torch.Tensor],
+            targets_list: List[torch.Tensor],
+            weights_list: List[torch.Tensor],
+            training: bool,
     ) -> Dict[str, float]:
         if self.num_classes and self.num_classes != 2 and not self._warned_non_binary_physics:
             logging.warning(
@@ -917,6 +918,7 @@ class Trainer:
             logits=probs.cpu().numpy(),
             targets=targets.cpu().numpy(),
             weights=weights.cpu().numpy(),
+            training=training,
             bins=self.config.physics_bins,
             min_bkg_events=self.config.sic_min_bkg_events,
             log_plots=self.wandb_run is not None,
@@ -941,7 +943,7 @@ class Trainer:
         logging.info(" | ".join(msg_parts))
 
     def _collect_predictions(
-        self, dataset: EvenetTensorDataset, batch_size: int = 256
+            self, dataset: EvenetTensorDataset, batch_size: int = 256
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         original_flag = getattr(dataset, "include_indices", False)
         dataset.include_indices = True
@@ -1004,10 +1006,10 @@ class Trainer:
         return preds
 
     def evaluate(
-        self,
-        dataset: EvenetTensorDataset,
-        batch_size: int = 256,
-        output_path: Optional[str] = None,
+            self,
+            dataset: EvenetTensorDataset,
+            batch_size: int = 256,
+            output_path: Optional[str] = None,
     ) -> Dict[str, float]:
         preds, indices = self._collect_predictions(dataset, batch_size)
 
@@ -1015,7 +1017,8 @@ class Trainer:
             return {}
 
         labels = dataset.labels[indices] if indices.numel() > 0 else dataset.labels
-        weights = dataset.sample_weights[indices] if dataset.sample_weights is not None and indices.numel() > 0 else dataset.sample_weights
+        weights = dataset.sample_weights[
+            indices] if dataset.sample_weights is not None and indices.numel() > 0 else dataset.sample_weights
         raw_features = (
             {name: tensor[indices] for name, tensor in dataset.raw_features.items()}
             if indices.numel() > 0
@@ -1041,6 +1044,7 @@ class Trainer:
                         if weights is not None
                         else torch.ones_like(labels, dtype=torch.float32).numpy()
                     ),
+                    training=False,
                     bins=self.config.physics_bins,
                     min_bkg_events=self.config.sic_min_bkg_events,
                     log_plots=self.wandb_run is not None,
@@ -1093,14 +1097,14 @@ class Trainer:
         return provided.joinpath("eval_output.npz")
 
     def _export_evaluation(
-        self,
-        *,
-        base_path: Path,
-        preds: torch.Tensor,
-        labels: torch.Tensor,
-        weights: Optional[torch.Tensor],
-        raw_features: Dict[str, torch.Tensor],
-        metrics: Dict[str, float],
+            self,
+            *,
+            base_path: Path,
+            preds: torch.Tensor,
+            labels: torch.Tensor,
+            weights: Optional[torch.Tensor],
+            raw_features: Dict[str, torch.Tensor],
+            metrics: Dict[str, float],
     ) -> None:
         base_path = self._ensure_np_suffix(base_path)
         base_path.parent.mkdir(parents=True, exist_ok=True)
