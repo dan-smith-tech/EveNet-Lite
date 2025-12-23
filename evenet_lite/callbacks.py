@@ -281,6 +281,10 @@ class EvenetLiteNormalizer:
         self._feature_names = {}
 
         normalization_stats = normalization_stats or {}
+        if not normalization_stats:
+            logging.info(
+                "No normalization statistics provided; defaulting to identity normalization (mean=0, std=1)."
+            )
 
         for key, tensor in data.items():
             if not torch.is_tensor(tensor):
@@ -312,6 +316,8 @@ class EvenetLiteNormalizer:
                         feature_dim,
                     )
                 mean[: min(pm.numel(), feature_dim)] = pm[:feature_dim]
+            else:
+                logging.info("No mean provided for %s; using zeros.", key)
 
             provided_std = provided.get("std")
             if provided_std is not None:
@@ -324,6 +330,8 @@ class EvenetLiteNormalizer:
                         feature_dim,
                     )
                 std[: min(ps.numel(), feature_dim)] = ps[:feature_dim]
+            else:
+                logging.info("No std provided for %s; using ones.", key)
 
             std = std.clamp_min(1e-6)
 
