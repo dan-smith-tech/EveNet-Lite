@@ -54,7 +54,7 @@ if __name__ == '__main__':
 
     clf = EvenetLiteClassifier(
         class_labels=['bkg', 'signal'],
-        device="auto",  # "cpu", "cuda", or "auto"
+        device="mps",  # "cpu", "cuda", or "auto"
         body_lr=1e-4,
         head_lr=1e-3,
         weight_decay=1e-3,
@@ -78,37 +78,37 @@ if __name__ == '__main__':
         val_data=(X_val, y_val, None),
         eval_data=(X_val, y_val, None),
         callbacks=[ParameterRandomizationCallback(min_values=[300, 500], max_values=[800, 1200])],
-        epochs=1,
+        epochs=5,
         batch_size=128,
         sampler="weighted",  # or None
         epoch_size=1280,  # or None,
         save_top_k=1,
         checkpoint_every=1,
         # checkpoint_path="./checkpoint",
-        # feature_names={"x": obj_feature_names, "globals": global_feature_names},
-        # normalization_rules={
-        #     "x": {
-        #         "energy": "log_normalize",
-        #         "pt": "log_normalize",
-        #         "eta": "normalize",
-        #         "phi": "normalize_uniform",
-        #         "isBTag": "none",
-        #         "isLepton": "none",
-        #         "Charge": "none",
-        #     },
-        #     "global": {
-        #         "met": "log_normalize",
-        #         "met_phi": "normalize",
-        #         "nLepton": "none",
-        #         "nbJet": "none",
-        #         "nJet": "none",
-        #         "HT": "log_normalize",
-        #         "HT_lep": "log_normalize",
-        #         "M_all": "log_normalize",
-        #         "M_leps": "log_normalize",
-        #         "M_bjets": "log_normalize",
-        #     }
-        # }
+        feature_names={"x": obj_feature_names, "globals": global_feature_names},
+        normalization_rules={
+            "x": {
+                "energy": "log_normalize",
+                "pt": "log_normalize",
+                "eta": "normalize",
+                "phi": "normalize_uniform",
+                "isBTag": "none",
+                "isLepton": "none",
+                "Charge": "none",
+            },
+            "global": {
+                "met": "log_normalize",
+                "met_phi": "normalize",
+                "nLepton": "none",
+                "nbJet": "none",
+                "nJet": "none",
+                "HT": "log_normalize",
+                "HT_lep": "log_normalize",
+                "M_all": "log_normalize",
+                "M_leps": "log_normalize",
+                "M_bjets": "log_normalize",
+            }
+        }
     )
     #
     # probs = clf.predict(X_val, batch_size=256)

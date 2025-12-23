@@ -470,7 +470,8 @@ class Trainer:
                             "epoch": epoch + 1,
                             **self._format_wandb_epoch_metrics(train_metrics, val_metrics),
                         }
-                        self.wandb_run.log(wandb_payload)
+                        # self.wandb_run.log(wandb_payload)
+                        self.wandb_run.log(wandb_payload, step=self.global_step)
                 else:
                     merged = {}
 
@@ -970,6 +971,7 @@ class Trainer:
             min_bkg_events=self.config.sic_min_bkg_events,
             log_plots=self.wandb_run is not None,
             wandb_run=self.wandb_run,
+            log_step=self.global_step,
         )
         return {"auc": metrics["auc"], "max_sic": metrics["max_sic"], "max_sic_unc": metrics["max_sic_unc"]}
 

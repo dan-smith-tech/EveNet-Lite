@@ -350,6 +350,7 @@ def calculate_physics_metrics(
         min_bkg_events: int = 100,
         log_plots: bool = False,
         wandb_run: Optional[object] = None,
+        log_step: Optional[int] = None,
 ) -> Dict[str, np.ndarray]:
     """Calculates AUC and Max SIC with statistical uncertainty."""
 
@@ -395,7 +396,8 @@ def calculate_physics_metrics(
             else:
                 log_name = "Physics/valid-SIC"
 
-            wandb_run.log({log_name: wandb.Image(fig)})
+            log_kwargs = {"step": log_step} if log_step is not None else {}
+            wandb_run.log({log_name: wandb.Image(fig)}, **log_kwargs)
         finally:
             import matplotlib.pyplot as plt
 
