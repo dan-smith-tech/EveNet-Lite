@@ -13,7 +13,7 @@ def compute_loss(logits: torch.Tensor, targets: torch.Tensor, weights: Optional[
     per_sample = F.cross_entropy(logits, targets, reduction="none")
     if weights is not None:
         weights = weights.to(per_sample.device)
-        per_sample = per_sample * weights
+        per_sample = per_sample * weights / sum(weights)
     return per_sample.mean()
 
 
