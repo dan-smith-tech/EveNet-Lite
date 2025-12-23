@@ -10,8 +10,7 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
 
-from .callbacks import Callback, NormalizationCallback
-from .callbacks.debug import DebugCallback
+from .callbacks import Callback, NormalizationCallback, DebugCallback
 from .data import EvenetTensorDataset, build_sampler, DistributedWeightedSampler
 from .checkpoint import load_checkpoint, save_checkpoint
 from .metrics import calculate_physics_metrics, compute_accuracy, compute_loss, summarize_metrics
@@ -737,13 +736,15 @@ class Trainer:
             return
         actual_dim = globals_tensor.shape[-1]
         if actual_dim != expected_dim:
-            logging.warning(
+            logging.error(
                 "Global feature dimension (%d) does not match model expectation (%d). "
                 "If you added parameterized inputs, update global_input_dim accordingly.",
                 actual_dim,
                 expected_dim,
             )
             self._warned_global_dim = True
+
+            exit(1)
 
     def _prepare_features(self, features: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         merged_features = self._maybe_concat_parameters(features)

@@ -26,7 +26,7 @@ class Callback:
         pass
 
     def on_batch_end(
-        self, trainer: "Trainer", epoch: int, batch_idx: int, batch: Dict[str, Any], loss: float
+        self, trainer: "Trainer", epoch: int, batch_idx: int, batch: Dict[str, Any], loss: float, metrics: Optional[Dict[str, float]] = None,
     ) -> None:  # pragma: no cover - interface
         pass
 
@@ -250,7 +250,7 @@ class EvenetLiteNormalizer:
 
             for idx in range(feature_dim):
                 name = names[idx]
-                rule = rules_for_key.get(name, "normalize")
+                rule = rules_for_key.get(name, "none")
                 rules.append(rule)
                 if rule == "none":
                     continue
