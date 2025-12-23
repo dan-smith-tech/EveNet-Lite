@@ -71,6 +71,8 @@ if __name__ == '__main__':
         },
         global_input_dim=12,
         num_workers=0,
+        body_modules=["GlobalEmbedding", "PET", "ObjectEncoder"],
+        head_modules=["Classification"],
     )
 
     clf.fit(
@@ -85,7 +87,11 @@ if __name__ == '__main__':
         save_top_k=1,
         checkpoint_every=1,
         # checkpoint_path="./checkpoint",
-        feature_names={"x": obj_feature_names, "globals": global_feature_names},
+        feature_names={
+            "x": obj_feature_names,
+            "globals": global_feature_names,
+            "params": ['m_X', 'm_Y'],
+        },
         normalization_rules={
             "x": {
                 "energy": "log_normalize",
@@ -96,7 +102,7 @@ if __name__ == '__main__':
                 "isLepton": "none",
                 "Charge": "none",
             },
-            "global": {
+            "globals": {
                 "met": "log_normalize",
                 "met_phi": "normalize",
                 "nLepton": "none",
@@ -108,6 +114,16 @@ if __name__ == '__main__':
                 "M_leps": "log_normalize",
                 "M_bjets": "log_normalize",
             }
+        },
+        normalization_stats={
+            "x": {
+                "mean": [0.12, -0.03, 0.5],  # len == num object features
+                "std": [1.1, 0.95, 0.8],
+            },
+            "globals": {
+                "mean": [-0.05, 10.0],  # len == num global features
+                "std": [1.0, 1.0],
+            },
         }
     )
     #
