@@ -37,6 +37,7 @@ def run_evenet_lite_training(
     val_weights: Optional[torch.Tensor] = None,
     feature_names: Optional[Dict[str, Iterable[str]]] = None,
     normalization_rules: Optional[Dict[str, Dict[str, str]]] = None,
+    normalization_stats: Optional[Dict[str, Any]] = None,
     callbacks: Optional[List[Callback]] = None,
     sampler: Optional[str] = None,
     epoch_size: Optional[int] = None,
@@ -83,6 +84,8 @@ def run_evenet_lite_training(
             feature strings, used by normalization callbacks.
         normalization_rules: Optional normalization configuration passed through
             to :meth:`EvenetLiteClassifier.fit`.
+        normalization_stats: Optional precomputed normalization statistics that
+            bypass fitting. Missing entries default to mean ``0`` and std ``1``.
         callbacks: Additional callbacks to append to training (debugging,
             metrics logging, etc.).
         sampler: Sampler strategy name (e.g., ``"weighted"``) forwarded to
@@ -130,6 +133,7 @@ def run_evenet_lite_training(
         eval_data=(eval_features, eval_labels, eval_weights) if eval_features is not None and eval_labels is not None else None,
         feature_names=feature_names,
         normalization_rules=normalization_rules,
+        normalization_stats=normalization_stats,
         callbacks=callbacks,
         epochs=epochs,
         batch_size=batch_size,

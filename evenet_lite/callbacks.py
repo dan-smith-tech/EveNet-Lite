@@ -262,6 +262,75 @@ class EvenetLiteNormalizer:
             self._resolved_rules[key] = rules
             self._feature_names[key] = names
 
+    def apply_user_stats(
+        self,
+        data: Dict[str, torch.Tensor],
+        feature_names: Dict[str, Iterable[str]],
+        normalization_stats: Dict[str, Any],
+    ) -> None:
+        """Load externally-provided statistics, filling gaps with defaults.
+
+        The provided ``normalization_stats`` is expected to mirror the structure
+        of :meth:`state_dict`, containing mean/std tensors per feature group.
+        When tensors are missing or have mismatched dimensions, missing values
+        default to mean ``0`` and std ``1`` so that inputs remain unchanged.
+        """
+
+        self._stats = {}
+        self._resolved_rules = {}
+        self._feature_names = {}
+
+        normalization_stats = normalization_stats or {}
+
+        for key, tensor in data.items():
+            if not torch.is_tensor(tensor):
+                tensor = torch.as_tensor(tensor)
+            if tensor.numel() == 0 or tensor.dtype not in (torch.float32, torch.float64, torch.float16, torch.bfloat16):
+                continue
+
+            names = self._resolve_feature_names(key, tensor, feature_names.get(key, []))
+            rules_for_key = self.normalization_rules.get(key, {})
+            rules: List[str] = []
+            feature_dim = tensor.shape[-1]
+
+            mean = torch.zeros(feature_dim, device=tensor.device, dtype=torch.float32)
+            std = torch.ones(feature_dim, device=tensor.device, dtype=torch.float32)
+            provided = normalization_stats.get(key, {}) if normalization_stats is not None else {}
+
+            for idx in range(feature_dim):
+                name = names[idx]
+                rules.append(rules_for_key.get(name, "none"))
+
+            provided_mean = provided.get("mean")
+            if provided_mean is not None:
+                pm = torch.as_tensor(provided_mean, dtype=torch.float32, device=mean.device).flatten()
+                if pm.numel() != feature_dim:
+                    logging.warning(
+                        "Provided mean for %s has %d elements (expected %d); truncating/padding with defaults.",
+                        key,
+                        pm.numel(),
+                        feature_dim,
+                    )
+                mean[: min(pm.numel(), feature_dim)] = pm[:feature_dim]
+
+            provided_std = provided.get("std")
+            if provided_std is not None:
+                ps = torch.as_tensor(provided_std, dtype=torch.float32, device=std.device).flatten()
+                if ps.numel() != feature_dim:
+                    logging.warning(
+                        "Provided std for %s has %d elements (expected %d); truncating/padding with defaults.",
+                        key,
+                        ps.numel(),
+                        feature_dim,
+                    )
+                std[: min(ps.numel(), feature_dim)] = ps[:feature_dim]
+
+            std = std.clamp_min(1e-6)
+
+            self._stats[key] = {"mean": mean, "std": std}
+            self._resolved_rules[key] = rules
+            self._feature_names[key] = names
+
     def _apply_rule(self, tensor: torch.Tensor, mean: torch.Tensor, std: torch.Tensor, rule: str) -> torch.Tensor:
         if rule == "none":
             return tensor
@@ -368,20 +437,33 @@ class NormalizationCallback(Callback):
         self,
         normalizer: Optional[EvenetLiteNormalizer] = None,
         normalization_rules: Optional[Dict[str, Dict[str, str]]] = None,
+        normalization_stats: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.normalizer = normalizer or EvenetLiteNormalizer(normalization_rules)
         if normalization_rules is not None:
             self.normalizer.set_rules(normalization_rules)
+        self.normalization_stats = normalization_stats
 
     def set_rules(self, normalization_rules: Optional[Dict[str, Dict[str, str]]]) -> None:
         self.normalizer.set_rules(normalization_rules)
 
+    def set_stats(self, normalization_stats: Optional[Dict[str, Any]]) -> None:
+        self.normalization_stats = normalization_stats
+
     def on_train_start(self, trainer: "Trainer") -> None:
         train_data = trainer.train_dataset.raw_features
         feature_names = trainer.feature_names
-        self.normalizer.fit(train_data, feature_names)
-        trainer.attach_normalizer(self.normalizer)
-        logging.info("Fitted normalizer with features: %s", {k: list(v) for k, v in feature_names.items()})
+        if self.normalization_stats is not None:
+            self.normalizer.apply_user_stats(train_data, feature_names, self.normalization_stats)
+            trainer.attach_normalizer(self.normalizer)
+            logging.info(
+                "Loaded provided normalizer stats for features: %s",
+                {k: list(v) for k, v in feature_names.items()},
+            )
+        else:
+            self.normalizer.fit(train_data, feature_names)
+            trainer.attach_normalizer(self.normalizer)
+            logging.info("Fitted normalizer with features: %s", {k: list(v) for k, v in feature_names.items()})
 
     def state_dict(self) -> Dict[str, Any]:
         return {"normalizer": self.normalizer.state_dict()}

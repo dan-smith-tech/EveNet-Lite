@@ -175,6 +175,7 @@ class EvenetLiteClassifier:
             val_params: Optional[torch.Tensor] = None,
             feature_names: Optional[Dict[str, Iterable[str]]] = None,
             normalization_rules: Optional[Dict[str, Dict[str, str]]] = None,
+            normalization_stats: Optional[Dict[str, Any]] = None,
             callbacks: Optional[List[Callback]] = None,
             epochs: int = 10,
             batch_size: int = 256,
@@ -214,11 +215,16 @@ class EvenetLiteClassifier:
             normalization_rules = copy.deepcopy(self.DEFAULT_NORMALIZATION_RULES)
         callback_list = callbacks or []
         if not any(isinstance(cb, NormalizationCallback) for cb in callback_list):
-            callback_list = [NormalizationCallback(normalization_rules=normalization_rules)] + callback_list
+            callback_list = [
+                NormalizationCallback(
+                    normalization_rules=normalization_rules, normalization_stats=normalization_stats
+                )
+            ] + callback_list
         elif normalization_rules is not None:
             for cb in callback_list:
                 if isinstance(cb, NormalizationCallback):
                     cb.set_rules(normalization_rules)
+                    cb.set_stats(normalization_stats)
                     break
 
         self.config.checkpoint_path = checkpoint_path
