@@ -352,6 +352,7 @@ def calculate_physics_metrics(
         log_plots: bool = False,
         wandb_run: Optional[object] = None,
         log_step: Optional[int] = None,
+        f_name: Optional[str] = None,
 ) -> Dict[str, np.ndarray]:
     """Calculates AUC and Max SIC with statistical uncertainty."""
 
@@ -369,7 +370,7 @@ def calculate_physics_metrics(
 
     try:
         # auc_val = roc_auc_score(targets, scores, sample_weight=weights)
-        auc_val,_,_,_ =  weighted_roc_curve(targets, scores, sample_weight=weights)
+        auc_val, _, _, _ = weighted_roc_curve(targets, scores, sample_weight=weights)
     except ValueError:
         auc_val = 0.5
 
@@ -382,7 +383,7 @@ def calculate_physics_metrics(
         "edges": edges,
     }
 
-    if log_plots and wandb_run is not None:
+    if log_plots:
         fig = plot_sic_diagnostics(
             targets=targets,
             scores=scores,
@@ -390,20 +391,24 @@ def calculate_physics_metrics(
             sic_result=sic_result,
             min_bkg_events=min_bkg_events,
         )
-        try:
-            import wandb
 
-            if training:
-                log_name = "Physics/train-SIC"
-            else:
-                log_name = "Physics/valid-SIC"
+        if f_name is not None:
+            fig.savefig(f_name, dpi=300, bbox_inches="tight")
+        if wandb_run is not None:
+            try:
+                import wandb
 
-            log_kwargs = {"step": log_step} if log_step is not None else {}
-            wandb_run.log({log_name: wandb.Image(fig)}, **log_kwargs)
-        finally:
-            import matplotlib.pyplot as plt
+                if training:
+                    log_name = "Physics/train-SIC"
+                else:
+                    log_name = "Physics/valid-SIC"
 
-            plt.close(fig)
+                log_kwargs = {"step": log_step} if log_step is not None else {}
+                wandb_run.log({log_name: wandb.Image(fig)}, **log_kwargs)
+            finally:
+                pass
+        import matplotlib.pyplot as plt
+        plt.close(fig)
 
     return metrics
 
