@@ -30,7 +30,7 @@ def weighted_roc_curve(
         bin_edges: Optional[np.ndarray] = None,
         n_points: int = 1000,
         safe_eps: float = 1e-6,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[float, np.ndarray, np.ndarray, np.ndarray]:
     # Sort by score descending
     sorted_idx = np.argsort(-y_score)
     y_true = y_true[sorted_idx]
@@ -70,7 +70,8 @@ def weighted_roc_curve(
     fpr_interp = np.interp(tpr_uniform, fpr_raw, fpr_clipped)
     sigma_fpr_interp = np.interp(tpr_uniform, tpr_raw, sigma_fpr_raw)
 
-    return fpr_interp, tpr_uniform, sigma_fpr_interp
+    auc = np.trapz(tpr_uniform, fpr_interp)
+    return auc, fpr_interp, tpr_uniform, sigma_fpr_interp
 
 
 def convert_to_SIC(sig_eff: float, bkg_rej: float, bkg_rej_unc: Optional[float] = None) -> Tuple[
@@ -367,7 +368,8 @@ def calculate_physics_metrics(
     )
 
     try:
-        auc_val = roc_auc_score(targets, scores, sample_weight=weights)
+        # auc_val = roc_auc_score(targets, scores, sample_weight=weights)
+        auc_val,_,_,_ =  weighted_roc_curve(targets, scores, sample_weight=weights)
     except ValueError:
         auc_val = 0.5
 
