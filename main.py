@@ -55,8 +55,7 @@ if __name__ == '__main__':
     clf = EvenetLiteClassifier(
         class_labels=['bkg', 'signal'],
         device="mps",  # "cpu", "cuda", or "auto"
-        body_lr=1e-4,
-        head_lr=1e-3,
+        lr=[1e-3, 3e-4, 1e-4],
         weight_decay=1e-3,
         grad_clip=1.0,
         warmup_epochs=1,
@@ -71,8 +70,6 @@ if __name__ == '__main__':
         },
         global_input_dim=12,
         num_workers=0,
-        body_modules=["GlobalEmbedding", "PET", "ObjectEncoder"],
-        head_modules=["Classification"],
     )
 
     clf.fit(

@@ -1,14 +1,19 @@
 import logging
 import math
-from typing import Any, Callable, Iterable, List, Tuple
+from dataclasses import dataclass
+from typing import Any, Callable, Iterable, List, Sequence, Tuple
 
 import torch
 
 DEFAULT_HEAD_LR = 1e-3
 DEFAULT_WEIGHT_DECAY = 1e-2
-BODY_LR_SCALE = 0.1
-DEFAULT_BODY_MODULES: List[str] = ["GlobalEmbedding", "PET", "ObjectEncoder"]
-DEFAULT_HEAD_MODULES: List[str] = ["Classification"]
+DEFAULT_LR_GROUPS: List[float] = [1e-3, 3e-4, 1e-4]
+DEFAULT_WEIGHT_DECAY_GROUPS: List[float] = [DEFAULT_WEIGHT_DECAY] * len(DEFAULT_LR_GROUPS)
+DEFAULT_MODULE_GROUPS: List[List[str]] = [
+    ["Classification"],
+    ["ObjectEncoder"],
+    ["PET", "GlobalEmbedding"],
+]
 
 
 def unwrap_model(model: torch.nn.Module):
@@ -31,45 +36,72 @@ def _collect_parameters(model: torch.nn.Module, module_names: Iterable[str]) -> 
     return params
 
 
-def resolve_module_groups(config: Any) -> Tuple[List[str], List[str]]:
-    body_modules = config.body_modules or list(DEFAULT_BODY_MODULES)
-    head_modules = config.head_modules or list(DEFAULT_HEAD_MODULES)
-    return body_modules, head_modules
-
-
 def _scale_for_distributed(value: float, world_size: int) -> float:
     if world_size <= 1:
         return value
     return value * (world_size ** 0.5)
 
 
-def resolve_group_lr(config: Any, tag: str, world_size: int = 1) -> float:
-    head_lr = config.head_lr if config.head_lr is not None else config.lr or DEFAULT_HEAD_LR
-    body_lr = config.body_lr if config.body_lr is not None else head_lr * BODY_LR_SCALE
-    head_lr = _scale_for_distributed(head_lr, world_size)
-    body_lr = _scale_for_distributed(body_lr, world_size)
-    if tag == "body":
-        return body_lr
-    if tag == "head":
-        return head_lr
-    return head_lr
+def _as_list(value: Any) -> List[Any]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return [value]
 
 
-def resolve_group_weight_decay(config: Any, tag: str, world_size: int = 1) -> float:
-    default_wd = config.weight_decay if config.weight_decay is not None else DEFAULT_WEIGHT_DECAY
-    head_wd = config.head_weight_decay if config.head_weight_decay is not None else default_wd
-    body_wd = config.body_weight_decay if config.body_weight_decay is not None else default_wd
-    head_wd = _scale_for_distributed(head_wd, world_size)
-    body_wd = _scale_for_distributed(body_wd, world_size)
-    return body_wd if tag == "body" else head_wd
+def _normalize_hparam(
+        values: Sequence[Any],
+        target_len: int,
+        name: str,
+) -> List[Any]:
+    if len(values) == target_len:
+        return list(values)
+    if len(values) == 1:
+        return list(values) * target_len
+    raise ValueError(f"{name} length {len(values)} does not match module list length {target_len}")
+
+
+@dataclass
+class OptimizerGroupConfig:
+    tag: str
+    modules: List[str]
+    lr: float
+    weight_decay: float
+
+
+def resolve_optimizer_groups(config: Any, world_size: int = 1) -> List[OptimizerGroupConfig]:
+    module_groups: List[List[str]] = config.module_lists or list(DEFAULT_MODULE_GROUPS)
+    lrs = _as_list(config.lr) or list(DEFAULT_LR_GROUPS)
+    weight_decays = _as_list(config.weight_decay) or list(DEFAULT_WEIGHT_DECAY_GROUPS)
+
+    module_groups = [list(group) for group in module_groups]
+    lrs = _normalize_hparam(lrs, len(module_groups), "lr")
+    weight_decays = _normalize_hparam(weight_decays, len(module_groups), "weight_decay")
+
+    lrs = [_scale_for_distributed(lr, world_size) for lr in lrs]
+    weight_decays = [_scale_for_distributed(wd, world_size) for wd in weight_decays]
+
+    return [
+        OptimizerGroupConfig(
+            tag=f"group_{idx}",
+            modules=modules,
+            lr=lr,
+            weight_decay=wd,
+        )
+        for idx, (modules, lr, wd) in enumerate(zip(module_groups, lrs, weight_decays))
+    ]
 
 
 def default_optimizer_builder(
-        config: Any, world_size: int
-) -> Callable[[Iterable[torch.nn.Parameter], str], torch.optim.Optimizer]:
-    def _builder(params: Iterable[torch.nn.Parameter], tag: str = "head") -> torch.optim.Optimizer:
-        lr = resolve_group_lr(config, tag, world_size=world_size)
-        weight_decay = resolve_group_weight_decay(config, tag, world_size=world_size)
+        config: Any, world_size: int,
+) -> Callable[[Iterable[torch.nn.Parameter], float, float, str], torch.optim.Optimizer]:
+    def _builder(
+            params: Iterable[torch.nn.Parameter],
+            lr: float,
+            weight_decay: float,
+            tag: str = "group",
+    ) -> torch.optim.Optimizer:
         return torch.optim.AdamW(params, lr=lr, weight_decay=weight_decay)
 
     return _builder
@@ -82,7 +114,7 @@ def _compute_warmup_epochs(config: Any, epochs: int) -> int:
 
 
 def default_scheduler_builder(
-        config: Any, epochs: int, steps_per_epoch: int | None = None
+        config: Any, epochs: int, steps_per_epoch: int | None = None,
 ) -> Callable[[torch.optim.Optimizer, str], Any]:
     warmup_epochs = _compute_warmup_epochs(config, epochs)
     cosine_epochs = max(1, epochs - warmup_epochs)
@@ -90,7 +122,7 @@ def default_scheduler_builder(
     warmup_iters = warmup_epochs * steps_per_epoch if steps_per_epoch else warmup_epochs
     cosine_iters = max(1, cosine_epochs * steps_per_epoch) if steps_per_epoch else max(1, cosine_epochs)
 
-    def _builder(optimizer: torch.optim.Optimizer, tag: str = "head") -> Any:
+    def _builder(optimizer: torch.optim.Optimizer, tag: str = "group") -> Any:
         base_lrs = [group["lr"] for group in optimizer.param_groups]
         min_lr = config.min_lr
 
@@ -128,9 +160,7 @@ def build_optimizers_and_schedulers(
         world_size: int = 1,
         steps_per_epoch: int | None = None,
 ) -> Tuple[List[torch.optim.Optimizer], List[Any], List[str]]:
-    body_modules, head_modules = resolve_module_groups(config)
-    group_configs = [("body", body_modules), ("head", head_modules)]
-
+    group_configs = resolve_optimizer_groups(config, world_size=world_size)
     optimizer_builder = config.optimizer_fn or default_optimizer_builder(config, world_size)
     scheduler_builder = config.scheduler_fn or default_scheduler_builder(
         config, epochs, steps_per_epoch
@@ -140,14 +170,19 @@ def build_optimizers_and_schedulers(
     schedulers: List[Any] = []
     tags: List[str] = []
 
-    for tag, modules in group_configs:
-        params = _collect_parameters(model, modules)
+    for group in group_configs:
+        params = _collect_parameters(model, group.modules)
         if not params:
-            logging.warning("No parameters collected for optimizer group '%s'", tag)
+            logging.warning("No parameters collected for optimizer group '%s'", group.tag)
             continue
 
         optimizer: torch.optim.Optimizer
-        for args in [(params, tag), (params,)]:
+        for args in [
+            (params, group.lr, group.weight_decay, group.tag),
+            (params, group.lr, group.weight_decay),
+            (params, group.tag),
+            (params,),
+        ]:
             try:
                 optimizer = optimizer_builder(*args)  # type: ignore[misc]
                 break
@@ -157,8 +192,8 @@ def build_optimizers_and_schedulers(
 
         scheduler: Any = None
         for args in [
-            (optimizer, tag),
-            (optimizer, epochs, tag),
+            (optimizer, group.tag),
+            (optimizer, epochs, group.tag),
             (optimizer, epochs),
             (optimizer,),
         ]:
@@ -168,6 +203,6 @@ def build_optimizers_and_schedulers(
             except TypeError:
                 continue
         schedulers.append(scheduler)
-        tags.append(tag)
+        tags.append(group.tag)
 
     return optimizers, schedulers, tags

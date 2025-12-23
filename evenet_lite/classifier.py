@@ -14,7 +14,7 @@ from .callbacks import Callback, EvenetLiteNormalizer, NormalizationCallback
 from .data import EvenetTensorDataset
 from .hf_utils import load_pretrained_weights
 from .model import EveNetLite
-from .optim import DEFAULT_BODY_MODULES, DEFAULT_HEAD_MODULES, DEFAULT_HEAD_LR, DEFAULT_WEIGHT_DECAY
+from .optim import DEFAULT_HEAD_LR, DEFAULT_MODULE_GROUPS, DEFAULT_WEIGHT_DECAY
 from .trainer import Trainer, TrainerConfig
 
 
@@ -76,18 +76,13 @@ class EvenetLiteClassifier:
             self,
             class_labels: List[str],
             device: str = "auto",
-            lr: float = DEFAULT_HEAD_LR,
-            weight_decay: float = DEFAULT_WEIGHT_DECAY,
+            lr: List[float] | float = DEFAULT_HEAD_LR,
+            weight_decay: List[float] | float = DEFAULT_WEIGHT_DECAY,
             model: torch.nn.Module = None,
             optimizer_fn: Optional[Callable[..., torch.optim.Optimizer]] = None,
             grad_clip: Optional[float] = None,
             scheduler_fn: Optional[Callable[..., Any]] = None,
-            body_lr: Optional[float] = None,
-            head_lr: Optional[float] = None,
-            body_weight_decay: Optional[float] = None,
-            head_weight_decay: Optional[float] = None,
-            body_modules: Optional[List[str]] = None,
-            head_modules: Optional[List[str]] = None,
+            module_lists: Optional[List[List[str]]] = None,
             warmup_epochs: Optional[int] = 1,
             warmup_ratio: float = 0.1,
             warmup_start_factor: float = 0.1,
@@ -144,13 +139,8 @@ class EvenetLiteClassifier:
         self.config = TrainerConfig(
             device=device,
             lr=lr,
-            body_lr=body_lr,
-            head_lr=head_lr,
             weight_decay=weight_decay,
-            body_weight_decay=body_weight_decay,
-            head_weight_decay=head_weight_decay,
-            body_modules=body_modules if body_modules is not None else list(DEFAULT_BODY_MODULES),
-            head_modules=head_modules if head_modules is not None else list(DEFAULT_HEAD_MODULES),
+            module_lists=module_lists if module_lists is not None else [list(group) for group in DEFAULT_MODULE_GROUPS],
             grad_clip=grad_clip,
             optimizer_fn=optimizer_fn,
             scheduler_fn=scheduler_fn,

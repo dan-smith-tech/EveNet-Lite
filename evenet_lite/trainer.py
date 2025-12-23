@@ -1,6 +1,6 @@
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -16,9 +16,8 @@ from .checkpoint import load_checkpoint, save_checkpoint
 from .metrics import calculate_physics_metrics, compute_accuracy, compute_loss, summarize_metrics
 from .optim import (
     build_optimizers_and_schedulers,
-    DEFAULT_BODY_MODULES,
-    DEFAULT_HEAD_MODULES,
-    DEFAULT_HEAD_LR,
+    DEFAULT_LR_GROUPS,
+    DEFAULT_MODULE_GROUPS,
     DEFAULT_WEIGHT_DECAY,
 )
 
@@ -26,14 +25,9 @@ from .optim import (
 @dataclass
 class TrainerConfig:
     device: str = "auto"
-    lr: float = DEFAULT_HEAD_LR
-    body_lr: Optional[float] = None
-    head_lr: Optional[float] = None
-    weight_decay: float = DEFAULT_WEIGHT_DECAY
-    body_weight_decay: Optional[float] = None
-    head_weight_decay: Optional[float] = None
-    body_modules: Optional[List[str]] = None
-    head_modules: Optional[List[str]] = None
+    lr: List[float] = field(default_factory=lambda: list(DEFAULT_LR_GROUPS))
+    weight_decay: List[float] = field(default_factory=lambda: [DEFAULT_WEIGHT_DECAY] * len(DEFAULT_LR_GROUPS))
+    module_lists: List[List[str]] = field(default_factory=lambda: [list(group) for group in DEFAULT_MODULE_GROUPS])
     grad_clip: Optional[float] = None
     num_workers: int = 2
     scheduler_fn: Optional[Any] = None
@@ -59,20 +53,6 @@ class TrainerConfig:
     early_stop_minimize: bool = True
     early_stop_patience: int = 0
     find_unused_parameters: bool = True
-
-    def __post_init__(self) -> None:
-        if self.head_lr is None:
-            self.head_lr = self.lr
-        if self.body_lr is None:
-            self.body_lr = self.head_lr * 0.1
-        if self.head_weight_decay is None:
-            self.head_weight_decay = self.weight_decay
-        if self.body_weight_decay is None:
-            self.body_weight_decay = self.weight_decay
-        if self.body_modules is None:
-            self.body_modules = list(DEFAULT_BODY_MODULES)
-        if self.head_modules is None:
-            self.head_modules = list(DEFAULT_HEAD_MODULES)
 
 
 class Trainer:

@@ -9,7 +9,11 @@ import torch
 import yaml
 
 from evenet_lite import run_evenet_lite_training
-from evenet_lite.optim import DEFAULT_HEAD_LR, DEFAULT_WEIGHT_DECAY
+from evenet_lite.optim import (
+    DEFAULT_LR_GROUPS,
+    DEFAULT_MODULE_GROUPS,
+    DEFAULT_WEIGHT_DECAY,
+)
 
 
 FeatureBundle = Tuple[Dict[str, torch.Tensor], torch.Tensor]
@@ -139,15 +143,27 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument("--device", type=str, default="auto", help="Device placement for training")
-    parser.add_argument("--lr", type=float, default=DEFAULT_HEAD_LR, help="Global learning rate")
-    parser.add_argument("--body-lr", type=float, default=1e-4, help="Learning rate for body modules")
-    parser.add_argument("--head-lr", type=float, default=1e-3, help="Learning rate for head modules")
-    parser.add_argument("--weight-decay", type=float, default=DEFAULT_WEIGHT_DECAY, help="Weight decay for optimizer")
-    parser.add_argument("--body-weight-decay", type=float, help="Weight decay for body modules")
-    parser.add_argument("--head-weight-decay", type=float, help="Weight decay for head modules")
+    parser.add_argument(
+        "--lr",
+        type=float,
+        nargs="+",
+        default=list(DEFAULT_LR_GROUPS),
+        help="Learning rates for each optimizer group",
+    )
+    parser.add_argument(
+        "--weight-decay",
+        type=float,
+        nargs="+",
+        default=[DEFAULT_WEIGHT_DECAY] * len(DEFAULT_LR_GROUPS),
+        help="Weight decay values for each optimizer group",
+    )
+    parser.add_argument(
+        "--module-lists",
+        action="append",
+        nargs="+",
+        help="Module names assigned to an optimizer group; repeat for multiple groups",
+    )
     parser.add_argument("--grad-clip", type=float, default=1.0, help="Gradient clipping value")
-    parser.add_argument("--body-modules", nargs="+", help="Override default body module names")
-    parser.add_argument("--head-modules", nargs="+", help="Override default head module names")
     parser.add_argument("--warmup-epochs", type=int, default=1, help="Number of warmup epochs")
     parser.add_argument("--warmup-ratio", type=float, default=0.1, help="Warmup ratio for scheduler")
     parser.add_argument(
@@ -248,13 +264,8 @@ def main() -> None:
     classifier_config = dict(
         device=args.device,
         lr=args.lr,
-        body_lr=args.body_lr,
-        head_lr=args.head_lr,
         weight_decay=args.weight_decay,
-        body_weight_decay=args.body_weight_decay,
-        head_weight_decay=args.head_weight_decay,
-        body_modules=args.body_modules,
-        head_modules=args.head_modules,
+        module_lists=args.module_lists if args.module_lists else list(DEFAULT_MODULE_GROUPS),
         grad_clip=args.grad_clip,
         warmup_epochs=args.warmup_epochs,
         warmup_ratio=args.warmup_ratio,
