@@ -358,7 +358,7 @@ def calculate_physics_metrics(
 
     # Convert logits → scores
     if logits.ndim == 1 or logits.shape[1] == 1:
-        scores = expit(logits.reshape(-1))
+        scores = logits
     else:
         scores = softmax(logits, axis=1)[:, 1]
 
