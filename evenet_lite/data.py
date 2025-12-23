@@ -30,7 +30,7 @@ class EvenetTensorDataset(Dataset):
         self.raw_features = {}
         for name, tensor in features.items():
             tensor = torch.as_tensor(tensor)
-            if name in {"x", "globals"}:
+            if name in {"x", "globals", "params"}:
                 tensor = tensor.to(dtype=torch.float32)
             self.raw_features[name] = tensor
 

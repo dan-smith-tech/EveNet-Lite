@@ -708,13 +708,54 @@ class Trainer:
         except TypeError:
             return model(features)
 
+    def _maybe_concat_parameters(self, features: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        if "params" not in features:
+            return features
+
+        merged = dict(features)
+        params = merged.pop("params")
+        globals_tensor = merged.get("globals")
+        if globals_tensor is None:
+            merged["globals"] = params
+            return merged
+
+        if globals_tensor.shape[0] != params.shape[0]:
+            logging.warning(
+                "Batch globals and params have mismatched batch sizes (%d vs %d); skipping parameter concatenation.",
+                globals_tensor.shape[0],
+                params.shape[0],
+            )
+            return merged
+
+        merged["globals"] = torch.cat([globals_tensor, params], dim=-1)
+        return merged
+
+    def _warn_if_global_dim_mismatch(self, globals_tensor: torch.Tensor) -> None:
+        model = self._unwrap_model()
+        expected_dim = getattr(model, "global_input_dim", None)
+        if expected_dim is None or hasattr(self, "_warned_global_dim") and self._warned_global_dim:
+            return
+        actual_dim = globals_tensor.shape[-1]
+        if actual_dim != expected_dim:
+            logging.warning(
+                "Global feature dimension (%d) does not match model expectation (%d). "
+                "If you added parameterized inputs, update global_input_dim accordingly.",
+                actual_dim,
+                expected_dim,
+            )
+            self._warned_global_dim = True
+
     def _prepare_features(self, features: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        merged_features = self._maybe_concat_parameters(features)
         prepared: Dict[str, torch.Tensor] = {}
-        for name, tensor in features.items():
+        for name, tensor in merged_features.items():
             tensor = tensor.to(self.device)
             if name in {"x", "globals"}:
                 tensor = tensor.float()
             prepared[name] = tensor
+
+        if "globals" in prepared:
+            self._warn_if_global_dim_mismatch(prepared["globals"])
         return prepared
 
     def _run_epoch(
@@ -753,8 +794,13 @@ class Trainer:
                 logging.debug("Progress bar unavailable: %s", exc)
 
         for batch_idx, (features, targets, weights) in enumerate(loader):
-            features = self._prepare_features(features)
-            targets = targets.long().to(self.device)
+            batch_payload = {"features": features, "targets": targets, "weights": weights}
+            for cb in self.callbacks:
+                cb.on_batch_start(self, epoch, batch_idx, batch_payload, training)
+
+            features = self._prepare_features(batch_payload["features"])
+            targets = batch_payload["targets"].long().to(self.device)
+            weights = batch_payload["weights"]
             weight_tensor: Optional[torch.Tensor] = None
             if weights is not None:
                 weights = weights.to(self.device)

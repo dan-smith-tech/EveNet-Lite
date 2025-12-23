@@ -2,7 +2,7 @@
 import copy
 import logging
 import math
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 import torch
 from torch.distributions import Normal
@@ -15,6 +15,11 @@ class Callback:
     """
 
     def on_train_start(self, trainer: "Trainer") -> None:  # pragma: no cover - interface
+        pass
+
+    def on_batch_start(
+        self, trainer: "Trainer", epoch: int, batch_idx: int, batch: Dict[str, Any], training: bool
+    ) -> None:  # pragma: no cover - interface
         pass
 
     def on_epoch_start(self, trainer: "Trainer", epoch: int) -> None:  # pragma: no cover - interface
@@ -30,6 +35,137 @@ class Callback:
 
     def on_train_end(self, trainer: "Trainer") -> None:  # pragma: no cover - interface
         pass
+
+
+class ParameterRandomizationCallback(Callback):
+    """Dynamically randomize parameter inputs for background events.
+
+    During training/validation, background samples (identified via
+    ``background_label``) receive fresh parameter values sampled uniformly from
+    the provided ``min_values``/``max_values`` range. Signal samples keep their
+    original parameter values. Optionally, ranges are inferred from the training
+    dataset if not supplied.
+    """
+
+    def __init__(
+        self,
+        param_key: str = "params",
+        background_label: int = 0,
+        min_values: Optional[Sequence[float]] = None,
+        max_values: Optional[Sequence[float]] = None,
+        apply_to_validation: bool = True,
+    ) -> None:
+        self.param_key = param_key
+        self.background_label = background_label
+        self._configured_min = min_values
+        self._configured_max = max_values
+        self.apply_to_validation = apply_to_validation
+
+        self._resolved_min: Optional[torch.Tensor] = None
+        self._resolved_max: Optional[torch.Tensor] = None
+        self._warned_missing_params = False
+        self._warned_bounds = False
+
+    def _maybe_warn(self, message: str) -> None:
+        if not self._warned_missing_params:
+            logging.warning(message)
+            self._warned_missing_params = True
+
+    def _resolve_bounds(self, param_dim: int, device: torch.device) -> Optional[torch.Tensor]:
+        def _to_tensor(values: Optional[Sequence[float]], name: str) -> Optional[torch.Tensor]:
+            if values is None:
+                return None
+            tensor = torch.as_tensor(values, dtype=torch.float32, device=device)
+            if tensor.numel() == 1 and param_dim > 1:
+                tensor = tensor.expand(param_dim)
+            if tensor.numel() != param_dim:
+                if not self._warned_bounds:
+                    logging.warning(
+                        "ParameterRandomizationCallback %s size %d does not match param_dim=%d; skipping randomization.",
+                        name,
+                        tensor.numel(),
+                        param_dim,
+                    )
+                    self._warned_bounds = True
+                return None
+            return tensor
+
+        min_values = self._resolved_min if self._resolved_min is not None else _to_tensor(self._configured_min, "min_values")
+        max_values = self._resolved_max if self._resolved_max is not None else _to_tensor(self._configured_max, "max_values")
+
+        if min_values is None or max_values is None:
+            return None
+
+        if min_values.shape != max_values.shape:
+            if not self._warned_bounds:
+                logging.warning(
+                    "ParameterRandomizationCallback min/max shapes differ (%s vs %s); skipping randomization.",
+                    tuple(min_values.shape),
+                    tuple(max_values.shape),
+                )
+                self._warned_bounds = True
+            return None
+
+        return torch.stack([min_values, max_values])
+
+    def on_train_start(self, trainer: "Trainer") -> None:
+        if (self._configured_min is None or self._configured_max is None) and hasattr(
+            trainer, "train_dataset"
+        ):
+            raw_params = trainer.train_dataset.raw_features.get(self.param_key)
+            if raw_params is not None and raw_params.numel() > 0:
+                self._resolved_min = torch.as_tensor(raw_params).amin(dim=0).float()
+                self._resolved_max = torch.as_tensor(raw_params).amax(dim=0).float()
+            else:
+                self._maybe_warn(
+                    "ParameterRandomizationCallback could not infer parameter bounds because the training dataset "
+                    f"does not include '{self.param_key}'."
+                )
+
+    def on_batch_start(
+        self, trainer: "Trainer", epoch: int, batch_idx: int, batch: Dict[str, Any], training: bool
+    ) -> None:
+        if not training and not self.apply_to_validation:
+            return
+
+        features = batch.get("features", {})
+        targets = batch.get("targets")
+        if targets is None:
+            return
+
+        if self.param_key not in features:
+            if training:
+                self._maybe_warn(
+                    f"ParameterRandomizationCallback skipped because '{self.param_key}' is absent in batch features."
+                )
+            return
+
+        params = features[self.param_key]
+        if params.dim() < 2:
+            return
+
+        bounds = self._resolve_bounds(params.shape[-1], params.device)
+        if bounds is None:
+            return
+
+        min_values, max_values = bounds[0], bounds[1]
+        bkg_mask = targets == self.background_label
+        if not torch.any(bkg_mask):
+            return
+
+        random_raw = torch.rand((int(bkg_mask.sum().item()), params.shape[-1]), device=params.device, dtype=params.dtype)
+        replacement = random_raw * (max_values - min_values) + min_values
+
+        normalizer = next((cb.normalizer for cb in trainer.callbacks if hasattr(cb, "normalizer")), None)
+        if normalizer is not None and hasattr(normalizer, "transform"):
+            try:
+                replacement = normalizer.transform({self.param_key: replacement})[self.param_key]
+            except Exception:
+                pass
+
+        params = params.clone()
+        params[bkg_mask] = replacement
+        features[self.param_key] = params
 
 
 class EvenetLiteNormalizer:

@@ -167,6 +167,8 @@ class EvenetLiteClassifier:
             self,
             train_data: Tuple[Dict[str, torch.Tensor], torch.Tensor, Optional[torch.Tensor]],
             val_data: Optional[Tuple[Dict[str, torch.Tensor], torch.Tensor, Optional[torch.Tensor]]] = None,
+            train_params: Optional[torch.Tensor] = None,
+            val_params: Optional[torch.Tensor] = None,
             feature_names: Optional[Dict[str, Iterable[str]]] = None,
             normalization_rules: Optional[Dict[str, Dict[str, str]]] = None,
             callbacks: Optional[List[Callback]] = None,
@@ -184,6 +186,7 @@ class EvenetLiteClassifier:
             early_stop_patience: int = 0,
             early_stop_minimize: bool = True,
             eval_data: Optional[Tuple[Dict[str, torch.Tensor], torch.Tensor, Optional[torch.Tensor]]] = None,
+            eval_params: Optional[torch.Tensor] = None,
             eval_output_path: Optional[str] = None,
             eval_batch_size: Optional[int] = None,
             sic_min_bkg_events: int = 100,
@@ -193,6 +196,15 @@ class EvenetLiteClassifier:
             feature_names = copy.deepcopy(self.DEFAULT_FEATURE_NAMES)
         else:
             feature_names = copy.deepcopy(feature_names)
+
+        param_dim = None
+        for tensor in (train_params, val_params, eval_params):
+            if tensor is not None:
+                param_dim = tensor.shape[-1]
+                break
+        if param_dim is not None and "params" not in feature_names:
+            feature_names["params"] = [f"param_{i}" for i in range(param_dim)]
+
         self.feature_names = feature_names
         if normalization_rules is None:
             normalization_rules = copy.deepcopy(self.DEFAULT_NORMALIZATION_RULES)
@@ -217,6 +229,21 @@ class EvenetLiteClassifier:
         self.config.eval_output_path = eval_output_path
         self.config.eval_batch_size = eval_batch_size
         self.config.sic_min_bkg_events = sic_min_bkg_events
+
+        def _attach_params(
+            data: Optional[Tuple[Dict[str, torch.Tensor], torch.Tensor, Optional[torch.Tensor]]],
+            params: Optional[torch.Tensor],
+        ) -> Optional[Tuple[Dict[str, torch.Tensor], torch.Tensor, Optional[torch.Tensor]]]:
+            if data is None or params is None:
+                return data
+            features, labels, weights = data
+            merged_features = dict(features)
+            merged_features["params"] = params
+            return merged_features, labels, weights
+
+        train_data = _attach_params(train_data, train_params)
+        val_data = _attach_params(val_data, val_params)
+        eval_data = _attach_params(eval_data, eval_params)
 
         self.debug = debug
         self.trainer = Trainer(
