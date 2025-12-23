@@ -1,4 +1,3 @@
-
 import copy
 import logging
 import math
@@ -18,7 +17,7 @@ class Callback:
         pass
 
     def on_batch_start(
-        self, trainer: "Trainer", epoch: int, batch_idx: int, batch: Dict[str, Any], training: bool
+            self, trainer: "Trainer", epoch: int, batch_idx: int, batch: Dict[str, Any], training: bool
     ) -> None:  # pragma: no cover - interface
         pass
 
@@ -26,11 +25,13 @@ class Callback:
         pass
 
     def on_batch_end(
-        self, trainer: "Trainer", epoch: int, batch_idx: int, batch: Dict[str, Any], loss: float, metrics: Optional[Dict[str, float]] = None,
+            self, trainer: "Trainer", epoch: int, batch_idx: int, batch: Dict[str, Any], loss: float,
+            metrics: Optional[Dict[str, float]] = None,
     ) -> None:  # pragma: no cover - interface
         pass
 
-    def on_epoch_end(self, trainer: "Trainer", epoch: int, metrics: Dict[str, float]) -> None:  # pragma: no cover - interface
+    def on_epoch_end(self, trainer: "Trainer", epoch: int,
+                     metrics: Dict[str, float]) -> None:  # pragma: no cover - interface
         pass
 
     def on_train_end(self, trainer: "Trainer") -> None:  # pragma: no cover - interface
@@ -48,12 +49,12 @@ class ParameterRandomizationCallback(Callback):
     """
 
     def __init__(
-        self,
-        param_key: str = "params",
-        background_label: int = 0,
-        min_values: Optional[Sequence[float]] = None,
-        max_values: Optional[Sequence[float]] = None,
-        apply_to_validation: bool = True,
+            self,
+            param_key: str = "params",
+            background_label: int = 0,
+            min_values: Optional[Sequence[float]] = None,
+            max_values: Optional[Sequence[float]] = None,
+            apply_to_validation: bool = True,
     ) -> None:
         self.param_key = param_key
         self.background_label = background_label
@@ -90,8 +91,10 @@ class ParameterRandomizationCallback(Callback):
                 return None
             return tensor
 
-        min_values = self._resolved_min if self._resolved_min is not None else _to_tensor(self._configured_min, "min_values")
-        max_values = self._resolved_max if self._resolved_max is not None else _to_tensor(self._configured_max, "max_values")
+        min_values = self._resolved_min if self._resolved_min is not None else _to_tensor(self._configured_min,
+                                                                                          "min_values")
+        max_values = self._resolved_max if self._resolved_max is not None else _to_tensor(self._configured_max,
+                                                                                          "max_values")
 
         if min_values is None or max_values is None:
             return None
@@ -110,7 +113,7 @@ class ParameterRandomizationCallback(Callback):
 
     def on_train_start(self, trainer: "Trainer") -> None:
         if (self._configured_min is None or self._configured_max is None) and hasattr(
-            trainer, "train_dataset"
+                trainer, "train_dataset"
         ):
             raw_params = trainer.train_dataset.raw_features.get(self.param_key)
             if raw_params is not None and raw_params.numel() > 0:
@@ -123,7 +126,7 @@ class ParameterRandomizationCallback(Callback):
                 )
 
     def on_batch_start(
-        self, trainer: "Trainer", epoch: int, batch_idx: int, batch: Dict[str, Any], training: bool
+            self, trainer: "Trainer", epoch: int, batch_idx: int, batch: Dict[str, Any], training: bool
     ) -> None:
         if not training and not self.apply_to_validation:
             return
@@ -153,7 +156,8 @@ class ParameterRandomizationCallback(Callback):
         if not torch.any(bkg_mask):
             return
 
-        random_raw = torch.rand((int(bkg_mask.sum().item()), params.shape[-1]), device=params.device, dtype=params.dtype)
+        random_raw = torch.rand((int(bkg_mask.sum().item()), params.shape[-1]), device=params.device,
+                                dtype=params.dtype)
         replacement = random_raw * (max_values - min_values) + min_values
 
         normalizer = next((cb.normalizer for cb in trainer.callbacks if hasattr(cb, "normalizer")), None)
@@ -255,6 +259,8 @@ class EvenetLiteNormalizer:
                 if rule == "none":
                     continue
                 feature_values = flat[:, idx]
+                if rule == "log_normalize":
+                    feature_values = feature_values.log1p()
                 mean[idx] = feature_values.mean()
                 std[idx] = feature_values.std(unbiased=False).clamp_min(1e-6)
 
@@ -263,10 +269,10 @@ class EvenetLiteNormalizer:
             self._feature_names[key] = names
 
     def apply_user_stats(
-        self,
-        data: Dict[str, torch.Tensor],
-        feature_names: Dict[str, Iterable[str]],
-        normalization_stats: Dict[str, Any],
+            self,
+            data: Dict[str, torch.Tensor],
+            feature_names: Dict[str, Iterable[str]],
+            normalization_stats: Dict[str, Any],
     ) -> None:
         """Load externally-provided statistics, filling gaps with defaults.
 
@@ -382,13 +388,15 @@ class EvenetLiteNormalizer:
             normed_features: List[torch.Tensor] = []
             for idx in range(feature_dim):
                 normed_features.append(
-                    self._apply_rule(reshaped[:, idx], mean[idx], std[idx], rules[idx] if idx < len(rules) else "normalize")
+                    self._apply_rule(reshaped[:, idx], mean[idx], std[idx],
+                                     rules[idx] if idx < len(rules) else "normalize")
                 )
             stacked = torch.stack(normed_features, dim=-1)
             normalized_tensor = stacked.view_as(tensor)
 
             mask_key = f"{key}_mask"
-            if mask_key in data and isinstance(data[mask_key], torch.Tensor) and data[mask_key].dim() >= tensor.dim() - 1:
+            if mask_key in data and isinstance(data[mask_key], torch.Tensor) and data[
+                mask_key].dim() >= tensor.dim() - 1:
                 mask = data[mask_key].unsqueeze(-1).to(normalized_tensor.device)
                 normalized_tensor = normalized_tensor * mask
             normalized[key] = normalized_tensor
@@ -413,7 +421,8 @@ class EvenetLiteNormalizer:
             restored_features: List[torch.Tensor] = []
             for idx in range(feature_dim):
                 restored_features.append(
-                    self._invert_rule(reshaped[:, idx], mean[idx], std[idx], rules[idx] if idx < len(rules) else "normalize")
+                    self._invert_rule(reshaped[:, idx], mean[idx], std[idx],
+                                      rules[idx] if idx < len(rules) else "normalize")
                 )
             restored_tensor = torch.stack(restored_features, dim=-1).view_as(tensor)
             restored[key] = restored_tensor
@@ -487,10 +496,10 @@ class NormalizationCallback(Callback):
     """
 
     def __init__(
-        self,
-        normalizer: Optional[EvenetLiteNormalizer] = None,
-        normalization_rules: Optional[Dict[str, Dict[str, str]]] = None,
-        normalization_stats: Optional[Dict[str, Any]] = None,
+            self,
+            normalizer: Optional[EvenetLiteNormalizer] = None,
+            normalization_rules: Optional[Dict[str, Dict[str, str]]] = None,
+            normalization_stats: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.normalizer = normalizer or EvenetLiteNormalizer(normalization_rules)
         if normalization_rules is not None:
@@ -547,7 +556,7 @@ class DebugCallback(Callback):
         if not norms:
             return None
         stacked = torch.stack(norms)
-        total = torch.sqrt(torch.sum(stacked**2)).item()
+        total = torch.sqrt(torch.sum(stacked ** 2)).item()
         return {"total": float(total), "max": float(stacked.max().item())}
 
     def on_epoch_start(self, trainer: "Trainer", epoch: int) -> None:
@@ -579,13 +588,13 @@ class DebugCallback(Callback):
             )
 
     def on_batch_end(
-        self,
-        trainer: "Trainer",
-        epoch: int,
-        batch_idx: int,
-        batch: Dict[str, torch.Tensor],
-        loss: float,
-        metrics: Optional[Dict[str, float]] = None,
+            self,
+            trainer: "Trainer",
+            epoch: int,
+            batch_idx: int,
+            batch: Dict[str, torch.Tensor],
+            loss: float,
+            metrics: Optional[Dict[str, float]] = None,
     ) -> None:
         if not trainer.is_rank_zero() or not trainer.model.training:
             return
