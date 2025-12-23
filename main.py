@@ -70,6 +70,7 @@ if __name__ == '__main__':
             'name': 'test',
         },
         global_input_dim=12,
+        num_workers=0,
     )
 
     clf.fit(

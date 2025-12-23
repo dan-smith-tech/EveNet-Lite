@@ -103,6 +103,7 @@ class EvenetLiteClassifier:
             pretrained_repo_id: Optional[str] = DEFAULT_HF_REPO_ID,
             pretrained_filename: Optional[str] = DEFAULT_HF_REPO_FILENAME,
             pretrained_cache_dir: Optional[str] = None,
+            num_workers: int = 0,
     ) -> None:
         root_logger = logging.getLogger()
         log_format = "%(asctime)s | %(levelname)s | %(message)s"
@@ -159,6 +160,7 @@ class EvenetLiteClassifier:
             min_lr=min_lr,
             use_wandb=use_wandb,
             wandb=wandb,
+            num_workers=num_workers,
         )
         self.trainer: Optional[Trainer] = None
         self.normalizer: Optional[EvenetLiteNormalizer] = None

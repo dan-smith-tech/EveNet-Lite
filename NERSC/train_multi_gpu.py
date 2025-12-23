@@ -198,6 +198,11 @@ def parse_args() -> argparse.Namespace:
         type=str,
         help="Optional cache directory for pretrained weights",
     )
+
+    parser.add_argument(
+        "--num-workers", type=int, default=0, help="Number of workers for data loading"
+    )
+
     return parser.parse_args()
 
 
@@ -268,6 +273,7 @@ def main() -> None:
             "project": args.wandb_project,
             "name": args.wandb_name,
         },
+        num_workers=args.num_workers,
     )
 
     run_evenet_lite_training(

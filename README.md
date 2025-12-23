@@ -1,6 +1,9 @@
 # EveNet-Lite
 
-EveNet-Lite is a minimal, PyTorch-first training helper that keeps the EveNet model stack but trims away heavy trainers or YAML-driven configuration. It exposes a small sklearn-like API (`fit/predict/evaluate`), a runner that wires up distributed training automatically, and convenience tools for checkpointing, sampling, normalization, and pretrained weight loading.
+EveNet-Lite is a minimal, PyTorch-first training helper that keeps the EveNet model stack but trims away heavy trainers
+or YAML-driven configuration. It exposes a small sklearn-like API (`fit/predict/evaluate`), a runner that wires up
+distributed training automatically, and convenience tools for checkpointing, sampling, normalization, and pretrained
+weight loading.
 
 The repository is self contained; add the repo root to your `PYTHONPATH` or install in editable mode:
 
@@ -10,7 +13,8 @@ pip install -e .
 
 ## Quick start: pipeline runner
 
-If you already have tensors prepared for objects/globals/mask, the runner wraps everything needed for a full train/validate/evaluate cycle and detects DDP from standard `torchrun` environment variables:
+If you already have tensors prepared for objects/globals/mask, the runner wraps everything needed for a full
+train/validate/evaluate cycle and detects DDP from standard `torchrun` environment variables:
 
 ```python
 import torch
@@ -85,7 +89,8 @@ classifier = run_evenet_lite_training(
 
 ## Custom workflow (manual steps)
 
-Prefer to assemble the pieces yourself? You can directly instantiate the classifier, call `fit`, and run evaluation/prediction without the runner.
+Prefer to assemble the pieces yourself? You can directly instantiate the classifier, call `fit`, and run
+evaluation/prediction without the runner.
 
 ```python
 import torch
@@ -94,11 +99,11 @@ from evenet_lite import EvenetLiteClassifier
 # Build the classifier (uses default EveNetLite backbone if none is provided)
 clf = EvenetLiteClassifier(
     class_labels=["background", "signal"],
-    device="auto",          # cpu, cuda, or auto-detect
+    device="auto",  # cpu, cuda, or auto-detect
     lr=1e-3,
     weight_decay=0.01,
     grad_clip=1.0,
-    pretrained=True,         # load HF weights by default
+    pretrained=True,  # load HF weights by default
 )
 
 # Fit
@@ -121,7 +126,8 @@ probs = clf.predict({"x": X_test, "globals": G_test, "mask": M_test})
 clf.save_checkpoint("./checkpoints/latest.pt")
 # Later
 restored = EvenetLiteClassifier(class_labels=["background", "signal"])
-restored.load_checkpoint("./checkpoints/latest.pt", feature_names={"x": obj_feature_names, "globals": global_feature_names})
+restored.load_checkpoint("./checkpoints/latest.pt",
+                         feature_names={"x": obj_feature_names, "globals": global_feature_names})
 ```
 
 ## Data expectations
@@ -130,15 +136,16 @@ Input tensors follow an xgboost-like contract and are provided directly to the c
 
 ```python
 features = {
-    "x": torch.Tensor[N, M, F],     # per-object features
+    "x": torch.Tensor[N, M, F],  # per-object features
     "globals": torch.Tensor[N, G],  # event-level features
-    "mask": torch.Tensor[N, M],     # padding mask
+    "mask": torch.Tensor[N, M],  # padding mask
 }
-labels = torch.Tensor[N]              # class indices
-weights = torch.Tensor[N] | None      # optional per-example weights
+labels = torch.Tensor[N]  # class indices
+weights = torch.Tensor[N] | None  # optional per-example weights
 ```
 
-Feature names passed to `fit` (`feature_names={"x": [...], "globals": [...]}`) should align with the keys above so the normalizer can match statistics to columns.
+Feature names passed to `fit` (`feature_names={"x": [...], "globals": [...]}`) should align with the keys above so the
+normalizer can match statistics to columns.
 
 ## Argument reference
 
@@ -146,94 +153,104 @@ The tables below summarize the most-used entrypoints and their arguments. Defaul
 
 ### `EvenetLiteClassifier` constructor
 
-| Argument | Default | Description |
-| --- | --- | --- |
-| `class_labels` | **required** | Ordered class names wired into metrics and loss. |
-| `device` | `"auto"` | Chooses CUDA when available; otherwise CPU. |
-| `lr` | `DEFAULT_HEAD_LR` | Base learning rate for the head (and body if `body_lr` not set). |
-| `weight_decay` | `DEFAULT_WEIGHT_DECAY` | Global weight decay when per-group values are not provided. |
-| `model` | `None` | Custom EveNet model; defaults to `EveNetLite` built from `config/default_network_config.yaml`. |
-| `optimizer_fn` / `scheduler_fn` | `None` | Factories for custom optimizer or scheduler. |
-| `grad_clip` | `None` | Max gradient norm when set. |
-| `body_lr` / `head_lr` | `None` | Overrides for body/head learning rates (body defaults to `0.1 * head`). |
-| `body_weight_decay` / `head_weight_decay` | `None` | Overrides for weight decay by parameter group. |
-| `body_modules` / `head_modules` | `DEFAULT_*_MODULES` | Module name prefixes assigned to body/head parameter groups. |
-| `warmup_epochs` / `warmup_ratio` / `warmup_start_factor` | `1` / `0.1` / `0.1` | Linear warmup configuration. |
-| `min_lr` | `0.0` | Scheduler floor learning rate. |
-| `global_input_dim` / `sequential_input_dim` | `10` / `7` | Input feature dimensions for the default backbone. |
-| `use_wandb` / `wandb` | `False` / `None` | Enable Weights & Biases with optional init kwargs. |
-| `log_level` | `logging.INFO` | Root logging level when constructing the classifier. |
-| `pretrained` | `False` | When `True`, soft-loads weights (default HF repo/filename). |
-| `pretrained_source` | `"hf"` | `"hf"` for Hugging Face hub or `"local"` for a provided path. |
-| `pretrained_path` / `pretrained_repo_id` / `pretrained_filename` / `pretrained_cache_dir` | varies | Location details for pretrained checkpoints. |
+| Argument                                                                                  | Default                | Description                                                                                    |
+|-------------------------------------------------------------------------------------------|------------------------|------------------------------------------------------------------------------------------------|
+| `class_labels`                                                                            | **required**           | Ordered class names wired into metrics and loss.                                               |
+| `device`                                                                                  | `"auto"`               | Chooses CUDA when available; otherwise CPU.                                                    |
+| `lr`                                                                                      | `DEFAULT_HEAD_LR`      | Base learning rate for the head (and body if `body_lr` not set).                               |
+| `weight_decay`                                                                            | `DEFAULT_WEIGHT_DECAY` | Global weight decay when per-group values are not provided.                                    |
+| `model`                                                                                   | `None`                 | Custom EveNet model; defaults to `EveNetLite` built from `config/default_network_config.yaml`. |
+| `optimizer_fn` / `scheduler_fn`                                                           | `None`                 | Factories for custom optimizer or scheduler.                                                   |
+| `grad_clip`                                                                               | `None`                 | Max gradient norm when set.                                                                    |
+| `body_lr` / `head_lr`                                                                     | `None`                 | Overrides for body/head learning rates (body defaults to `0.1 * head`).                        |
+| `body_weight_decay` / `head_weight_decay`                                                 | `None`                 | Overrides for weight decay by parameter group.                                                 |
+| `body_modules` / `head_modules`                                                           | `DEFAULT_*_MODULES`    | Module name prefixes assigned to body/head parameter groups.                                   |
+| `warmup_epochs` / `warmup_ratio` / `warmup_start_factor`                                  | `1` / `0.1` / `0.1`    | Linear warmup configuration.                                                                   |
+| `min_lr`                                                                                  | `0.0`                  | Scheduler floor learning rate.                                                                 |
+| `global_input_dim` / `sequential_input_dim`                                               | `10` / `7`             | Input feature dimensions for the default backbone.                                             |
+| `use_wandb` / `wandb`                                                                     | `False` / `None`       | Enable Weights & Biases with optional init kwargs.                                             |
+| `log_level`                                                                               | `logging.INFO`         | Root logging level when constructing the classifier.                                           |
+| `pretrained`                                                                              | `False`                | When `True`, soft-loads weights (default HF repo/filename).                                    |
+| `pretrained_source`                                                                       | `"hf"`                 | `"hf"` for Hugging Face hub or `"local"` for a provided path.                                  |
+| `pretrained_path` / `pretrained_repo_id` / `pretrained_filename` / `pretrained_cache_dir` | varies                 | Location details for pretrained checkpoints.                                                   |
+| `num_workers`                                                                             | 0                      | Number of processes passing to pytorch `DataLoader`                                              |
 
 ### `EvenetLiteClassifier.fit`
 
-| Argument | Default | Description |
-| --- | --- | --- |
-| `train_data` | **required** | Tuple `(features, labels, weights)` for training. |
-| `val_data` | `None` | Optional validation tuple with same structure as training. |
-| `feature_names` | Defaults to classifier presets | Mapping of feature group to column names for normalization. |
-| `normalization_rules` | Defaults to classifier presets | Per-feature normalization strategy (`log_normalize`, `normalize`, etc.). |
-| `callbacks` | `None` | Additional callbacks (normalization is auto-inserted if absent). |
-| `epochs` | `10` | Number of training epochs. |
-| `batch_size` | `256` | Mini-batch size. |
-| `sampler` | `None` | Sampler name (`"weighted"` enables distributed-safe weighted sampler). |
-| `epoch_size` | `None` | Number of samples per epoch when using a sampler. |
-| `checkpoint_path` / `resume_from` | `None` | Directory or filename for checkpoints and optional resume path. |
-| `checkpoint_every` | `1` | Frequency (epochs) for periodic checkpoints when `save_top_k == 0`. |
-| `save_top_k` | `0` | Keep best-k checkpoints ranked by `monitor_metric`. |
-| `monitor_metric` / `minimize_metric` | `"val_loss"` / `True` | Metric and direction for checkpoint ranking. |
-| `early_stop_metric` / `early_stop_minimize` / `early_stop_patience` | `"val_loss"` / `True` / `0` | Early stopping configuration (disabled when patience is 0). |
-| `eval_data` | `None` | Optional test tuple evaluated after training. |
-| `eval_output_path` | `None` | Path to save evaluation outputs when provided. |
-| `eval_batch_size` | `None` | Batch size for evaluation (falls back to training batch size). |
-| `sic_min_bkg_events` | `100` | Minimum background events for SIC metric calculation. |
-| `debug` | `False` | Enables verbose `DebugCallback` logging and diagnostics. |
+| Argument                                                            | Default                        | Description                                                              |
+|---------------------------------------------------------------------|--------------------------------|--------------------------------------------------------------------------|
+| `train_data`                                                        | **required**                   | Tuple `(features, labels, weights)` for training.                        |
+| `val_data`                                                          | `None`                         | Optional validation tuple with same structure as training.               |
+| `feature_names`                                                     | Defaults to classifier presets | Mapping of feature group to column names for normalization.              |
+| `normalization_rules`                                               | Defaults to classifier presets | Per-feature normalization strategy (`log_normalize`, `normalize`, etc.). |
+| `callbacks`                                                         | `None`                         | Additional callbacks (normalization is auto-inserted if absent).         |
+| `epochs`                                                            | `10`                           | Number of training epochs.                                               |
+| `batch_size`                                                        | `256`                          | Mini-batch size.                                                         |
+| `sampler`                                                           | `None`                         | Sampler name (`"weighted"` enables distributed-safe weighted sampler).   |
+| `epoch_size`                                                        | `None`                         | Number of samples per epoch when using a sampler.                        |
+| `checkpoint_path` / `resume_from`                                   | `None`                         | Directory or filename for checkpoints and optional resume path.          |
+| `checkpoint_every`                                                  | `1`                            | Frequency (epochs) for periodic checkpoints when `save_top_k == 0`.      |
+| `save_top_k`                                                        | `0`                            | Keep best-k checkpoints ranked by `monitor_metric`.                      |
+| `monitor_metric` / `minimize_metric`                                | `"val_loss"` / `True`          | Metric and direction for checkpoint ranking.                             |
+| `early_stop_metric` / `early_stop_minimize` / `early_stop_patience` | `"val_loss"` / `True` / `0`    | Early stopping configuration (disabled when patience is 0).              |
+| `eval_data`                                                         | `None`                         | Optional test tuple evaluated after training.                            |
+| `eval_output_path`                                                  | `None`                         | Path to save evaluation outputs when provided.                           |
+| `eval_batch_size`                                                   | `None`                         | Batch size for evaluation (falls back to training batch size).           |
+| `sic_min_bkg_events`                                                | `100`                          | Minimum background events for SIC metric calculation.                    |
+| `debug`                                                             | `False`                        | Enables verbose `DebugCallback` logging and diagnostics.                 |
 
 ### `EvenetLiteClassifier.predict` / `evaluate`
 
-- `predict(features, batch_size=256)`: returns class probabilities using the stored normalizer; requires that `fit` or `load_checkpoint` has been called.
-- `evaluate(features, labels, weights=None, batch_size=256)`: computes loss/accuracy (and physics metrics when available) on the provided dataset.
+- `predict(features, batch_size=256)`: returns class probabilities using the stored normalizer; requires that `fit` or
+  `load_checkpoint` has been called.
+- `evaluate(features, labels, weights=None, batch_size=256)`: computes loss/accuracy (and physics metrics when
+  available) on the provided dataset.
 
 ### `run_evenet_lite_training`
 
-| Argument | Default | Description |
-| --- | --- | --- |
-| `train_features` / `train_labels` / `train_weights` | **required** / **required** / `None` | Training tensors and optional weights. |
-| `class_labels` | **required** | Ordered class names passed to the classifier. |
-| `val_features` / `val_labels` / `val_weights` | `None` | Optional validation tensors and weights. |
-| `feature_names` | `None` | Feature column names forwarded to the classifier. |
-| `normalization_rules` | `None` | Per-feature normalization overrides. |
-| `callbacks` | `None` | Extra callbacks (normalization auto-added if missing). |
-| `sampler` / `epoch_size` | `None` | Sampling strategy and epoch size when sampling. |
-| `epochs` / `batch_size` | `10` / `256` | Training loop configuration. |
-| `checkpoint_path` / `resume_from` | `None` | Checkpoint directory/base filename and optional resume path. |
-| `checkpoint_every` | `1` | Epoch frequency for periodic checkpoints when not using top-k. |
-| `save_top_k` | `0` | Number of best checkpoints to retain. |
-| `monitor_metric` / `minimize_metric` | `"val_loss"` / `True` | Metric and direction for best-checkpoint tracking. |
-| `early_stop_metric` / `early_stop_minimize` / `early_stop_patience` | `"val_loss"` / `True` / `0` | Early stopping configuration. |
-| `eval_features` / `eval_labels` / `eval_weights` | `None` | Optional evaluation payload run after training. |
-| `eval_output_path` | `None` | File path to persist evaluation results. |
-| `eval_batch_size` | `None` | Batch size for evaluation (defaults to training batch size). |
-| `sic_min_bkg_events` | `100` | Minimum background events for SIC metric computation. |
-| `debug` | `False` | Enables verbose debugging callback and sampler diagnostics. |
-| `log_level` | `logging.INFO` | Logging level set before runner diagnostics. |
-| `**classifier_kwargs` | — | Additional arguments forwarded directly to `EvenetLiteClassifier`. |
+| Argument                                                            | Default                              | Description                                                        |
+|---------------------------------------------------------------------|--------------------------------------|--------------------------------------------------------------------|
+| `train_features` / `train_labels` / `train_weights`                 | **required** / **required** / `None` | Training tensors and optional weights.                             |
+| `class_labels`                                                      | **required**                         | Ordered class names passed to the classifier.                      |
+| `val_features` / `val_labels` / `val_weights`                       | `None`                               | Optional validation tensors and weights.                           |
+| `feature_names`                                                     | `None`                               | Feature column names forwarded to the classifier.                  |
+| `normalization_rules`                                               | `None`                               | Per-feature normalization overrides.                               |
+| `callbacks`                                                         | `None`                               | Extra callbacks (normalization auto-added if missing).             |
+| `sampler` / `epoch_size`                                            | `None`                               | Sampling strategy and epoch size when sampling.                    |
+| `epochs` / `batch_size`                                             | `10` / `256`                         | Training loop configuration.                                       |
+| `checkpoint_path` / `resume_from`                                   | `None`                               | Checkpoint directory/base filename and optional resume path.       |
+| `checkpoint_every`                                                  | `1`                                  | Epoch frequency for periodic checkpoints when not using top-k.     |
+| `save_top_k`                                                        | `0`                                  | Number of best checkpoints to retain.                              |
+| `monitor_metric` / `minimize_metric`                                | `"val_loss"` / `True`                | Metric and direction for best-checkpoint tracking.                 |
+| `early_stop_metric` / `early_stop_minimize` / `early_stop_patience` | `"val_loss"` / `True` / `0`          | Early stopping configuration.                                      |
+| `eval_features` / `eval_labels` / `eval_weights`                    | `None`                               | Optional evaluation payload run after training.                    |
+| `eval_output_path`                                                  | `None`                               | File path to persist evaluation results.                           |
+| `eval_batch_size`                                                   | `None`                               | Batch size for evaluation (defaults to training batch size).       |
+| `sic_min_bkg_events`                                                | `100`                                | Minimum background events for SIC metric computation.              |
+| `debug`                                                             | `False`                              | Enables verbose debugging callback and sampler diagnostics.        |
+| `log_level`                                                         | `logging.INFO`                       | Logging level set before runner diagnostics.                       |
+| `**classifier_kwargs`                                               | —                                    | Additional arguments forwarded directly to `EvenetLiteClassifier`. |
 
 ## Distributed training
 
-The trainer boots into DDP automatically when `WORLD_SIZE > 1` (e.g., via `torchrun --nproc_per_node <num_gpus> script.py`). Rank 0 handles logging and checkpointing; sampler/loader seeds are synchronized per epoch. Without distributed environment variables, execution falls back to single process on GPU or CPU depending on availability.
+The trainer boots into DDP automatically when `WORLD_SIZE > 1` (e.g., via
+`torchrun --nproc_per_node <num_gpus> script.py`). Rank 0 handles logging and checkpointing; sampler/loader seeds are
+synchronized per epoch. Without distributed environment variables, execution falls back to single process on GPU or CPU
+depending on availability.
 
 ## Normalization & callbacks
 
-- A `NormalizationCallback` is injected automatically during `fit` when one is not provided. You can supply custom normalization rules or replace the callback entirely.
-- Implement custom callbacks by subclassing `Callback` and overriding hooks such as `on_train_start`, `on_epoch_end`, or `on_train_end`, then pass instances via the `callbacks` argument of `fit` or the runner.
+- A `NormalizationCallback` is injected automatically during `fit` when one is not provided. You can supply custom
+  normalization rules or replace the callback entirely.
+- Implement custom callbacks by subclassing `Callback` and overriding hooks such as `on_train_start`, `on_epoch_end`, or
+  `on_train_end`, then pass instances via the `callbacks` argument of `fit` or the runner.
 
 ## Checkpointing and pretrained weights
 
-- Call `save_checkpoint(path)` on a fitted classifier to persist model, optimizer/scheduler states, and the learned normalizer. Use `load_checkpoint(path, feature_names=...)` to restore weights for further training or inference.
-- Enable `pretrained=True` (with optional `pretrained_source`, `pretrained_path`, or Hugging Face repo/filename overrides) to soft-load compatible parameters while leaving shape-mismatched layers initialized.
+- Call `save_checkpoint(path)` on a fitted classifier to persist model, optimizer/scheduler states, and the learned
+  normalizer. Use `load_checkpoint(path, feature_names=...)` to restore weights for further training or inference.
+- Enable `pretrained=True` (with optional `pretrained_source`, `pretrained_path`, or Hugging Face repo/filename
+  overrides) to soft-load compatible parameters while leaving shape-mismatched layers initialized.
 
 ## Module guide
 
