@@ -41,24 +41,39 @@ metrics = classifier.evaluate({"x": X_eval, "globals": G_eval, "mask": M_eval}, 
 classifier.save_checkpoint("./checkpoints/final.pt")
 ```
 
-## Parameterized training (m_X, m_Y) example
+## Parameterized training (m_X, m_Y)
 
-To train with per-event parameters (e.g., ``m_X`` and ``m_Y``) and randomize background
-values every step, add a ``params`` tensor to your feature dictionaries and attach a
-``ParameterRandomizationCallback``. The helper script in ``examples/parameterized_train_multi_gpu_example.py``
-mirrors ``train_multi_gpu.py``'s concatenation style and runs a tiny synthetic job:
+You can train with per-event parameters (e.g., ``m_X`` and ``m_Y``) and randomize background
+values every step using ``ParameterRandomizationCallback``. The pattern works with the
+runner or your own loop; the only requirements are:
 
-```bash
-python examples/parameterized_train_multi_gpu_example.py
+1. Provide a ``params`` tensor with shape ``(N, num_params)`` alongside the usual ``x``/``globals``/``mask``
+   features. Concatenate it into ``globals`` before calling the runner so the model sees the expanded
+   global dimension (and update ``global_input_dim`` accordingly).
+2. Attach ``ParameterRandomizationCallback`` when fitting to resample background parameters each batch while
+   leaving signal parameters intact. Optionally set ``min_values``/``max_values`` (one value or a list per
+   parameter); otherwise the callback infers bounds from the training set.
+3. Keep validation randomization on (default) to match training, or set ``apply_to_validation=False`` if you
+   prefer fixed parameters there. Evaluation is untouched.
+
+Minimal usage sketch with ``run_evenet_lite_training``:
+
+```python
+from evenet_lite import run_evenet_lite_training
+from evenet_lite.callbacks import ParameterRandomizationCallback
+
+# globals_with_params = torch.cat([globals, params], dim=1)
+callbacks = [ParameterRandomizationCallback(min_values=[300, 500], max_values=[800, 1200])]
+
+classifier = run_evenet_lite_training(
+    train_features={"x": X_train, "globals": globals_with_params, "mask": M_train, "params": params_train},
+    train_labels=y_train,
+    val_features={"x": X_val, "globals": globals_val_with_params, "mask": M_val, "params": params_val},
+    val_labels=y_val,
+    callbacks=callbacks,
+    global_input_dim=globals_with_params.shape[1],
+)
 ```
-
-Key steps to adapt the pattern to your own ``train_multi_gpu.py`` workflow:
-
-1. Save ``params`` alongside ``x``, ``x_mask``, and ``global`` in your ``.pt`` tensors; the loader now
-   automatically includes it when present.
-2. Increase ``--global-input-dim`` (e.g., ``10 + number_of_params``) so the model expects the expanded global size.
-3. Pass ``ParameterRandomizationCallback`` in your callbacks list to resample background parameters each batch
-   while leaving signal parameters intact.
 
 ### What the runner handles
 
