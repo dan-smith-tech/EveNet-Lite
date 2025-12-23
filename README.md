@@ -41,6 +41,25 @@ metrics = classifier.evaluate({"x": X_eval, "globals": G_eval, "mask": M_eval}, 
 classifier.save_checkpoint("./checkpoints/final.pt")
 ```
 
+## Parameterized training (m_X, m_Y) example
+
+To train with per-event parameters (e.g., ``m_X`` and ``m_Y``) and randomize background
+values every step, add a ``params`` tensor to your feature dictionaries and attach a
+``ParameterRandomizationCallback``. The helper script in ``examples/parameterized_train_multi_gpu_example.py``
+mirrors ``train_multi_gpu.py``'s concatenation style and runs a tiny synthetic job:
+
+```bash
+python examples/parameterized_train_multi_gpu_example.py
+```
+
+Key steps to adapt the pattern to your own ``train_multi_gpu.py`` workflow:
+
+1. Save ``params`` alongside ``x``, ``x_mask``, and ``global`` in your ``.pt`` tensors; the loader now
+   automatically includes it when present.
+2. Increase ``--global-input-dim`` (e.g., ``10 + number_of_params``) so the model expects the expanded global size.
+3. Pass ``ParameterRandomizationCallback`` in your callbacks list to resample background parameters each batch
+   while leaving signal parameters intact.
+
 ### What the runner handles
 
 - Detects distributed environments (`WORLD_SIZE`, `LOCAL_RANK`) and pins the appropriate CUDA device when available.

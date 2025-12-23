@@ -57,12 +57,17 @@ def _load_split(sig_paths: List[Path], bkg_paths: List[Path]) -> FeatureBundle:
     sig_parts = [torch.load(p) for p in sig_paths]
     bkg_parts = [torch.load(p) for p in bkg_paths]
 
-    features = {
-        ("globals" if key == "global" else key): _concat_tensors(
-            [*(part[key] for part in sig_parts), *(part[key] for part in bkg_parts)]
+    available_keys = {key for part in [*sig_parts, *bkg_parts] for key in part.keys()}
+    requested_keys = ["x", "x_mask", "global", "params"]
+
+    features = {}
+    for key in requested_keys:
+        if key not in available_keys or any(key not in part for part in [*sig_parts, *bkg_parts]):
+            continue
+        alias = "globals" if key == "global" else key
+        features[alias] = _concat_tensors(
+            [*(part[key] for part in sig_parts if key in part), *(part[key] for part in bkg_parts if key in part)]
         )
-        for key in ["x", "x_mask", "global"]
-    }
 
     labels = torch.cat(
         [
