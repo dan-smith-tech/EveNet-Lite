@@ -1,5 +1,3 @@
-
-
 from typing import Dict, Iterator, Optional, Tuple
 
 import torch
@@ -20,12 +18,12 @@ class EvenetTensorDataset(Dataset):
     """
 
     def __init__(
-        self,
-        features: Dict[str, torch.Tensor],
-        labels: torch.Tensor,
-        sample_weights: Optional[torch.Tensor] = None,
-        normalizer: Optional[EvenetLiteNormalizer] = None,
-        include_indices: bool = False,
+            self,
+            features: Dict[str, torch.Tensor],
+            labels: torch.Tensor,
+            sample_weights: Optional[torch.Tensor] = None,
+            normalizer: Optional[EvenetLiteNormalizer] = None,
+            include_indices: bool = False,
     ) -> None:
         self.raw_features = {}
         for name, tensor in features.items():
@@ -89,12 +87,10 @@ class DistributedWeightedSampler(Sampler[int]):
     """
 
     def __init__(
-        self,
-        weights: torch.Tensor,
-        num_samples: Optional[int] = None,
-        replacement: bool = True,
-        epoch_size: Optional[int] = None,
+            self, weights: torch.Tensor,
+            num_samples: Optional[int] = None, replacement: bool = True, epoch_size: Optional[int] = None
     ) -> None:
+        super().__init__()
         if weights.dim() != 1:
             raise ValueError("weights should be a 1D tensor")
         self.weights = weights.float()
@@ -121,7 +117,7 @@ class DistributedWeightedSampler(Sampler[int]):
         generator.manual_seed(self.epoch)
         indices = torch.multinomial(self.weights, self.total_size, self.replacement, generator=generator).tolist()
         # Subsample for this replica
-        offset_indices = indices[self.rank : self.total_size : self.num_replicas]
+        offset_indices = indices[self.rank: self.total_size: self.num_replicas]
         return iter(offset_indices)
 
     def __len__(self) -> int:
@@ -129,10 +125,10 @@ class DistributedWeightedSampler(Sampler[int]):
 
 
 def build_sampler(
-    sampler: Optional[str],
-    dataset: EvenetTensorDataset,
-    weights: Optional[torch.Tensor],
-    epoch_size: Optional[int] = None,
+        sampler: Optional[str],
+        dataset: EvenetTensorDataset,
+        weights: Optional[torch.Tensor],
+        epoch_size: Optional[int] = None,
 ) -> Optional[Sampler[int]]:
     if sampler == "weighted":
         if weights is None:
