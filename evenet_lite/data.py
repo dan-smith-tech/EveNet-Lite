@@ -41,17 +41,29 @@ class EvenetTensorDataset(Dataset):
         self.normalizer = normalizer
         self.include_indices = include_indices
 
+        self.features: Dict[str, torch.Tensor] = {}
+        self._prepare_features()
+
     def set_normalizer(self, normalizer: EvenetLiteNormalizer) -> None:
         self.normalizer = normalizer
+        self._prepare_features()
+
+    def _prepare_features(self) -> None:
+        """Precompute normalized features to avoid per-sample allocations."""
+
+        if self.normalizer is None:
+            self.features = self.raw_features
+            return
+
+        with torch.no_grad():
+            transformed = self.normalizer.transform(self.raw_features)
+        self.features = {name: torch.as_tensor(tensor) for name, tensor in transformed.items()}
 
     def __len__(self) -> int:
         return self.labels.shape[0]
 
     def __getitem__(self, idx: int) -> Tuple[Dict[str, torch.Tensor], torch.Tensor, Optional[torch.Tensor]]:
-        features = {k: v[idx] for k, v in self.raw_features.items()}
-        if self.normalizer is not None:
-            features = self.normalizer.transform({k: v.unsqueeze(0) for k, v in features.items()})
-            features = {k: v.squeeze(0) for k, v in features.items()}
+        features = {k: v[idx] for k, v in self.features.items()}
         label = self.labels[idx]
         weight = self.sample_weights[idx] if self.sample_weights is not None else torch.tensor(1.0, dtype=torch.float32)
         if self.include_indices:
