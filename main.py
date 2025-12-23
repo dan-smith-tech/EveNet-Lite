@@ -57,6 +57,11 @@ if __name__ == '__main__':
         device="mps",  # "cpu", "cuda", or "auto"
         lr=[1e-3, 3e-4, 1e-4],
         weight_decay=1e-3,
+        module_lists=[
+            ["Classification"],
+            ["ObjectEncoder"],
+            ["PET", "GlobalEmbedding"],
+        ],
         grad_clip=1.0,
         warmup_epochs=1,
         warmup_ratio=0.1,
