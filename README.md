@@ -183,6 +183,7 @@ The tables below summarize the most-used entrypoints and their arguments. Defaul
 | `val_data`                                                          | `None`                         | Optional validation tuple with same structure as training.               |
 | `feature_names`                                                     | Defaults to classifier presets | Mapping of feature group to column names for normalization.              |
 | `normalization_rules`                                               | Defaults to classifier presets | Per-feature normalization strategy (`log_normalize`, `normalize`, etc.). |
+| `normalization_stats`                                               | `None`                         | Optional precomputed means/stds per feature group; missing values default to mean 0/std 1. |
 | `callbacks`                                                         | `None`                         | Additional callbacks (normalization is auto-inserted if absent).         |
 | `epochs`                                                            | `10`                           | Number of training epochs.                                               |
 | `batch_size`                                                        | `256`                          | Mini-batch size.                                                         |
@@ -215,6 +216,7 @@ The tables below summarize the most-used entrypoints and their arguments. Defaul
 | `val_features` / `val_labels` / `val_weights`                       | `None`                               | Optional validation tensors and weights.                           |
 | `feature_names`                                                     | `None`                               | Feature column names forwarded to the classifier.                  |
 | `normalization_rules`                                               | `None`                               | Per-feature normalization overrides.                               |
+| `normalization_stats`                                               | `None`                               | Optional precomputed means/stds per feature group; missing values default to mean 0/std 1. |
 | `callbacks`                                                         | `None`                               | Extra callbacks (normalization auto-added if missing).             |
 | `sampler` / `epoch_size`                                            | `None`                               | Sampling strategy and epoch size when sampling.                    |
 | `epochs` / `batch_size`                                             | `10` / `256`                         | Training loop configuration.                                       |
@@ -242,6 +244,23 @@ depending on availability.
 
 - A `NormalizationCallback` is injected automatically during `fit` when one is not provided. You can supply custom
   normalization rules or replace the callback entirely.
+- Pass `normalization_stats` to `EvenetLiteClassifier.fit` or `run_evenet_lite_training` to reuse precomputed
+  mean/std pairs without refitting. Provide a mapping per feature group, e.g.:
+
+  ```python
+  normalization_stats = {
+      "x": {"mean": [0.1, -0.2, 0.0], "std": [1.0, 0.9, 1.1]},
+      "globals": {"mean": [0.0, 0.0], "std": [1.0, 1.0]},
+  }
+
+  classifier.fit(
+      train_data=(train_features, y_train, w_train),
+      val_data=(val_features, y_val, w_val),
+      feature_names=feature_names,
+      normalization_stats=normalization_stats,
+  )
+  ```
+  Any missing groups or columns default to mean `0` and std `1`, and the applied plan is logged as a table on rank 0.
 - Implement custom callbacks by subclassing `Callback` and overriding hooks such as `on_train_start`, `on_epoch_end`, or
   `on_train_end`, then pass instances via the `callbacks` argument of `fit` or the runner.
 
