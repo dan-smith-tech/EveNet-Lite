@@ -433,6 +433,51 @@ class EvenetLiteNormalizer:
         self._resolved_rules = copy.deepcopy(state_dict.get("rules", {}))
         self._feature_names = copy.deepcopy(state_dict.get("feature_names", {}))
 
+    def format_stats_table(self) -> Optional[str]:
+        if not self._stats:
+            return None
+
+        columns = ["Feature Group", "Feature Name", "Rule", "Mean", "Std"]
+        rows: List[Dict[str, str]] = []
+
+        for feature_group, stats in self._stats.items():
+            mean = stats.get("mean")
+            std = stats.get("std")
+            if mean is None or std is None:
+                continue
+
+            names = self._feature_names.get(
+                feature_group, [f"feature_{i}" for i in range(mean.shape[0])]
+            )
+            rules = self._resolved_rules.get(feature_group, [])
+            feature_dim = mean.shape[0]
+
+            for idx in range(feature_dim):
+                rows.append(
+                    {
+                        "Feature Group": feature_group if idx == 0 else "",
+                        "Feature Name": names[idx] if idx < len(names) else f"feature_{idx}",
+                        "Rule": rules[idx] if idx < len(rules) else "none",
+                        "Mean": f"{float(mean[idx]):.6g}",
+                        "Std": f"{float(std[idx]):.6g}",
+                    }
+                )
+
+        if not rows:
+            return None
+
+        widths = {col: len(col) for col in columns}
+        for row in rows:
+            for col in columns:
+                widths[col] = max(widths[col], len(row[col]))
+
+        border = "+" + "+".join("-" * (widths[col] + 2) for col in columns) + "+"
+        header = "|" + "|".join(f" {col.ljust(widths[col])} " for col in columns) + "|"
+        separator = "+" + "+".join("=" * (widths[col] + 2) for col in columns) + "+"
+        body = ["|" + "|".join(f" {row[col].ljust(widths[col])} " for col in columns) + "|" for row in rows]
+
+        return "\n".join([border, header, separator, *body, border])
+
 
 class NormalizationCallback(Callback):
     """Callback that handles fitting and applying a normalizer.
@@ -472,6 +517,11 @@ class NormalizationCallback(Callback):
             self.normalizer.fit(train_data, feature_names)
             trainer.attach_normalizer(self.normalizer)
             logging.info("Fitted normalizer with features: %s", {k: list(v) for k, v in feature_names.items()})
+
+        if trainer.is_rank_zero():
+            table = self.normalizer.format_stats_table()
+            if table:
+                logging.info("Normalization plan:\n%s", table)
 
     def state_dict(self) -> Dict[str, Any]:
         return {"normalizer": self.normalizer.state_dict()}
