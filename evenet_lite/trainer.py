@@ -1012,7 +1012,7 @@ class Trainer:
             dataset,
             batch_size=batch_size,
             sampler=sampler,
-            shuffle=sampler is None,
+            shuffle=False,
             num_workers=self.config.num_workers,
         )
 
