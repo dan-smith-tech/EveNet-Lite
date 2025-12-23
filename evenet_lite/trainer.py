@@ -267,6 +267,15 @@ class Trainer:
             return self.model.module
         return self.model
 
+    def _load_model_state(self, state: Optional[Dict[str, torch.Tensor]]) -> None:
+        if self.world_size > 1:
+            payload = [state]
+            dist.broadcast_object_list(payload, src=0)
+            state = payload[0]
+        if state is None:
+            return
+        self._unwrap_model().load_state_dict(state)
+
     def _describe_sampler(self, sampler_obj: Optional[Any]) -> str:
         if sampler_obj is None:
             return "None (shuffled)"
@@ -424,6 +433,8 @@ class Trainer:
             self._log_training_overview(train_loader, val_loader, sampler_obj, val_sampler, epochs)
 
             best_metric: Optional[float] = None
+            best_model_state: Optional[Dict[str, torch.Tensor]] = None
+            best_epoch: Optional[int] = None
             epochs_since_improve = 0
 
             for epoch in range(epochs):
@@ -462,24 +473,33 @@ class Trainer:
                     cb.on_epoch_end(self, epoch, merged)
 
                 stop_training = False
-                if self.config.early_stop_patience > 0 and self.is_rank_zero():
-                    metric_value = merged.get(self.config.early_stop_metric)
-                    if metric_value is not None:
-                        improved = False
-                        if best_metric is None:
-                            improved = True
-                        elif self.config.early_stop_minimize:
-                            improved = metric_value < best_metric
-                        else:
-                            improved = metric_value > best_metric
+                metric_value = merged.get(self.config.early_stop_metric) if self.is_rank_zero() else None
+                improved = False
+                if metric_value is not None:
+                    if best_metric is None:
+                        improved = True
+                    elif self.config.early_stop_minimize:
+                        improved = metric_value < best_metric
+                    else:
+                        improved = metric_value > best_metric
 
-                        if improved:
-                            best_metric = metric_value
-                            epochs_since_improve = 0
-                        else:
-                            epochs_since_improve += 1
-                            if epochs_since_improve >= self.config.early_stop_patience:
-                                stop_training = True
+                if improved:
+                    best_metric = metric_value
+                    best_epoch = epoch
+                    epochs_since_improve = 0
+                    if self.is_rank_zero():
+                        best_model_state = {
+                            k: v.detach().cpu().clone() if torch.is_tensor(v) else v
+                            for k, v in self._unwrap_model().state_dict().items()
+                        }
+                elif (
+                    self.config.early_stop_patience > 0
+                    and best_metric is not None
+                    and metric_value is not None
+                ):
+                    epochs_since_improve += 1
+                    if epochs_since_improve >= self.config.early_stop_patience:
+                        stop_training = True
 
                 stop_tensor = torch.tensor(1 if stop_training else 0, device=self.device)
                 if self.world_size > 1:
@@ -491,6 +511,16 @@ class Trainer:
                         self.config.early_stop_metric,
                     )
                     break
+
+            if best_model_state is not None:
+                self._load_model_state(best_model_state)
+                if self.is_rank_zero():
+                    logging.info(
+                        "Restored best model from epoch %d based on %s=%.4f",
+                        (best_epoch or 0) + 1,
+                        self.config.early_stop_metric,
+                        best_metric if best_metric is not None else float("nan"),
+                    )
 
             for cb in self.callbacks:
                 cb.on_train_end(self)
