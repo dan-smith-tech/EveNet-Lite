@@ -42,22 +42,31 @@ class EvenetTensorDataset(Dataset):
         self.include_indices = include_indices
 
         self.features: Dict[str, torch.Tensor] = {}
+        self._prepared_normalizer: Optional[EvenetLiteNormalizer] = None
         self._prepare_features()
 
     def set_normalizer(self, normalizer: EvenetLiteNormalizer) -> None:
+        if normalizer is self._prepared_normalizer:
+            return
+
         self.normalizer = normalizer
         self._prepare_features()
 
     def _prepare_features(self) -> None:
         """Precompute normalized features to avoid per-sample allocations."""
 
+        if self.normalizer is self._prepared_normalizer and self.features:
+            return
+
         if self.normalizer is None:
             self.features = self.raw_features
+            self._prepared_normalizer = self.normalizer
             return
 
         with torch.no_grad():
             transformed = self.normalizer.transform(self.raw_features)
         self.features = {name: torch.as_tensor(tensor) for name, tensor in transformed.items()}
+        self._prepared_normalizer = self.normalizer
 
     def __len__(self) -> int:
         return self.labels.shape[0]
