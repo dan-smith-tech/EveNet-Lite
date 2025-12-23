@@ -170,12 +170,10 @@ def compute_sic_from_scores(
     bkg_eff = cum_bkg[idxs] / (total_bkg + eps)
     bkg_eff_unc = np.sqrt(cum_bkg2[idxs]) / (total_bkg + eps)
 
-    # Raw background count at cuts (unweighted)
-    bkg_raw = np.searchsorted(np.sort(scores[y_true == 0]), edges, side="left")
-    bkg_raw = bkg_mask.sum() - bkg_raw
+    bkg_yield = cum_bkg[idxs]
 
     # Valid region
-    valid = (bkg_eff > 0) & (bkg_raw >= min_bkg_events)
+    valid = (bkg_eff > 0) & (bkg_yield >= min_bkg_events)
 
     # Full curves (without the minimum-background cut) for plotting
     bkg_rej_full = np.full_like(sig_eff, np.nan, dtype=float)
@@ -203,7 +201,7 @@ def compute_sic_from_scores(
         max_sic = 0.0
         max_sic_unc = 0.0
 
-    valid = (bkg_raw >= min_bkg_events)
+    valid = bkg_yield >= min_bkg_events
 
     if not np.any(valid):
         min_bkg_idx = None  # or raise / handle gracefully
