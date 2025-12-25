@@ -445,8 +445,17 @@ def run_pipeline(args):
     d_bkg_tr = dm.load_data(bkg_datasets, "train", target_masses=target_masses, lumi=args.lumi)
 
     # Global Balance: Sum(Bkg Weights) = Sum(Sig Weights)
-    scale = np.sum(d_sig_tr['w']) / np.sum(d_bkg_tr['w'])
-    d_bkg_tr['w'] *= scale
+    # ---- global balance: scale background to match total signal weight ----
+    sig_sum = d_sig_tr["w"].sum()
+    bkg_sum = d_bkg_tr["w"].sum()
+
+    if bkg_sum > 0:
+        num_bkg = d_bkg_tr["w"].shape[0]
+        d_bkg_tr["w"] = d_bkg_tr["w"] * (num_bkg / bkg_sum)
+        d_sig_tr["w"] = d_sig_tr["w"] * (num_bkg / sig_sum)
+    #
+    # scale = np.sum(d_sig_tr['w']) / np.sum(d_bkg_tr['w'])
+    # d_bkg_tr['w'] *= scale
 
     # Merge
     X_full = np.concatenate([d_bkg_tr['X'], d_sig_tr['X']])
