@@ -153,7 +153,7 @@ class DatasetManager:
         self.feature_names_loaded = None
 
     def load_data(self, datasets: List[DatasetInfo], split: str = "train",
-                  target_masses: Optional[np.ndarray] = None) -> Dict[str, np.ndarray]:
+                  target_masses: Optional[np.ndarray] = None, lumi:float = 1.0) -> Dict[str, np.ndarray]:
         """
         Loads .npz files for the given list of datasets and split (train/valid).
         Handles:
@@ -194,7 +194,7 @@ class DatasetManager:
                         # --- Weights ---
                         # Weight = (Sign of genWeight) * (xsec / total_nevents)
                         raw_w = data['weights'] if 'weights' in data else np.ones(len(arr))
-                        phys_w = raw_w * (ds.xsec / ds.nevents)
+                        phys_w = raw_w * (ds.xsec * lumi / ds.nevents)
                         # if split == "train":
                         #     phys_w = abs(phys_w)  # Use absolute weights for training
                         #
@@ -438,11 +438,11 @@ def run_pipeline(args):
     dm = DatasetManager(cfg, parameterize=args.parameterize, features=args.features)
 
     logger.info(">>> Loading Signal (Train)...")
-    d_sig_tr = dm.load_data(sig_datasets, "train")
+    d_sig_tr = dm.load_data(sig_datasets, "train", lumi=args.lumi)
     d_sig_tr = dm.reweight_signals(d_sig_tr)  # Equalize mass points
 
     logger.info(">>> Loading Background (Train)...")
-    d_bkg_tr = dm.load_data(bkg_datasets, "train", target_masses=target_masses)
+    d_bkg_tr = dm.load_data(bkg_datasets, "train", target_masses=target_masses, lumi=args.lumi)
 
     # Global Balance: Sum(Bkg Weights) = Sum(Sig Weights)
     scale = np.sum(d_sig_tr['w']) / np.sum(d_bkg_tr['w'])
@@ -507,8 +507,8 @@ def run_pipeline(args):
 
     # 5. Inference (Evaluation)
     logger.info(">>> Loading Test Data...")
-    d_sig_te = dm.load_data(sig_datasets, "valid")
-    d_bkg_te = dm.load_data(bkg_datasets, "valid")
+    d_sig_te = dm.load_data(sig_datasets, "valid", lumi=args.lumi)
+    d_bkg_te = dm.load_data(bkg_datasets, "valid", lumi=args.lumi)
     d_sig_te = dm.reweight_signals(d_sig_te)
 
     # Prepare for parametrized inference loop
@@ -591,6 +591,7 @@ if __name__ == "__main__":
     parser.add_argument("--features_yaml", type=str, default=None, help="YAML file specifying features to use")
     parser.add_argument("--mX", type=float, default=None)
     parser.add_argument("--mY", type=float, default=None)
+    parser.add_argument("--lumi", type=float, default=36000)
 
     # Model Config
     parser.add_argument("--model", type=str, default="xgb", choices=["xgb", "tabpfn"])

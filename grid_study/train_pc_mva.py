@@ -192,7 +192,8 @@ class EveNetDatasetManager:
             self,
             datasets: List[DatasetInfo],
             split: str = "train",
-            target_masses: Optional[np.ndarray] = None
+            target_masses: Optional[np.ndarray] = None,
+            lumi:float = 1.0
     ) -> Dict[str, Any]:
         """
         Loads .pt files for EveNet.
@@ -253,7 +254,7 @@ class EveNetDatasetManager:
                     # avoid python floats leaking dtype/device
                     xsec = float(ds.xsec)
                     nevents = float(ds.nevents) if float(ds.nevents) != 0.0 else 1.0
-                    phys_w = raw_w * (xsec / nevents)
+                    phys_w = raw_w * (xsec * lumi / nevents)
                     # if split == "train":
                     #     phys_w = phys_w.abs()
 
@@ -469,12 +470,12 @@ def run_pipeline(args):
     dm = EveNetDatasetManager(cfg, parameterize=args.parameterize)
 
     logger.info(">>> Loading Signal (Train)...")
-    d_sig_tr = dm.load_data(sig_datasets_train, "train")
+    d_sig_tr = dm.load_data(sig_datasets_train, "train", lumi=args.lumi)
     d_sig_tr = dm.reweight_signals(d_sig_tr, logger=logger)
 
     logger.info(">>> Loading Background (Train)...")
     # Pass numpy if your loader expects numpy; otherwise pass torch and convert inside loader
-    d_bkg_tr = dm.load_data(bkg_datasets, "train", target_masses=target_masses.cpu().numpy())
+    d_bkg_tr = dm.load_data(bkg_datasets, "train", target_masses=target_masses.cpu().numpy(), lumi=args.lumi)
 
     # ---- global balance: scale background to match total signal weight ----
     sig_sum = d_sig_tr["w"].sum()
@@ -593,9 +594,9 @@ def run_pipeline(args):
     def is_rank_zero():
         return (not dist.is_available()) or (not dist.is_initialized()) or dist.get_rank() == 0
     logger.info(">>> Loading Test Data...")
-    d_sig_te = dm.load_data(sig_datasets_eval, "valid")
+    d_sig_te = dm.load_data(sig_datasets_eval, "valid", lumi=args.lumi)
     d_sig_te = dm.reweight_signals(d_sig_te, logger=logger)
-    d_bkg_te = dm.load_data(bkg_datasets, "valid")
+    d_bkg_te = dm.load_data(bkg_datasets, "valid", lumi=args.lumi)
 
     # Unique mass points as torch [K,2]
     unique_masses = torch.unique(d_sig_te["m"], dim=0)
@@ -702,7 +703,7 @@ if __name__ == "__main__":
     parser.add_argument("--learning_rate", type=float, default=1e-3, help="Learning rate for training")
     parser.add_argument("--param-mx-step", type=int, default=None)
     parser.add_argument("--param-my-step", type=int, default=None)
-
+    parser.add_argument("--lumi", type=float, default=36000)
 
     parser.add_argument("--ensemble", type=int, default=1, help="Number of ensemble models to train")
     parser.add_argument("--gamma", type=float, default=1.0, help="gamma for focal loss" )

@@ -1,0 +1,32 @@
+signal:
+  type: signal
+  wildcard: "NMSSM_XToYHTo2B2Tau*"
+  mx: [0, 1000]
+  my: [0, 1000]
+
+background:
+  ggHtautau:
+    wildcard: "GluGluHToTauTau_M125_TuneCP5_13TeV-powheg-pythia8"
+    xsec: 3.08
+    nEvent: 6439000
+    name: ggH
+  tt1l:
+    wildcard: "TTToSemiLeptonic_TuneCP5_13TeV-powheg-pythia8"
+    xsec: 365.35
+    nEvent: 144722000
+    name: ttbar
+  DYBJets_pt100to200:
+    wildcard: "DYBJetsToLL_M-50_Zpt-100to200_TuneCP5_13TeV-madgraphMLM-pythia8"
+    xsec: 3.222
+    nEvent: 8848155
+    name: DY+HF
+  DYBJets_pt200toInf:
+    wildcard: "DYBJetsToLL_M-50_Zpt-200toInf_TuneCP5_13TeV-madgraphMLM-pythia8"
+    xsec: 0.6181
+    nEvent: 887122
+    name: DY+HF
+  VBFHtautau:
+    wildcard: "VBFHToTauTau_M125_TuneCP5_13TeV-powheg-pythia8"
+    xsec: 0.237
+    nEvent: 1500000
+    name: H(VBF)

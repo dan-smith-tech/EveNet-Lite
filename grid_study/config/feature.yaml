@@ -1,0 +1,23 @@
+features:
+    - xgb_mHH_proxy
+    - xgb_mbb
+    - xgb_mtautau_visible
+    - xgb_dR_ltau
+    - xgb_dR_bb
+    - xgb_dpt_ltau
+    - xgb_b2_pt
+    - xgb_b1_pt
+    - xgb_mT_W
+    - xgb_met
+    - xgb_dphi_ltau_bb
+    - xgb_dphi_l_met
+    - l1_pt
+    - t1_pt
+    - xgb_mb1l
+    - xgb_mb1t
+    - xgb_mb2l
+    - xgb_mb2t
+    - xgb_dr_b1l
+    - xgb_dr_b1t
+    - xgb_dr_b2l
+    - xgb_dr_b2t
