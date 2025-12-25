@@ -47,7 +47,7 @@ def compute_loss(
     logits: torch.Tensor,
     targets: torch.Tensor,
     weights: Optional[torch.Tensor],
-    gamma: float = 1.5,
+    gamma: float = 2.0,
     eps: float = 1e-8,
 ) -> torch.Tensor:
     logits, targets, weights = _flatten_ensemble(logits, targets, weights)
