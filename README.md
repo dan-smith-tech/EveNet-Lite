@@ -172,6 +172,7 @@ The tables below summarize the most-used entrypoints and their arguments. Defaul
 | `pretrained_source`                                                                       | `"hf"`                 | `"hf"` for Hugging Face hub or `"local"` for a provided path.                                  |
 | `pretrained_path` / `pretrained_repo_id` / `pretrained_filename` / `pretrained_cache_dir` | varies                 | Location details for pretrained checkpoints.                                                   |
 | `num_workers`                                                                             | 0                      | Number of processes passing to pytorch `DataLoader`                                              |
+| `loss_gamma`                                                                              | `0.0`                  | Focal-loss gamma (``0`` reduces to standard cross-entropy).                                    |
 
 ### `EvenetLiteClassifier.fit`
 
@@ -228,6 +229,7 @@ The tables below summarize the most-used entrypoints and their arguments. Defaul
 | `eval_batch_size`                                                   | `None`                               | Batch size for evaluation (defaults to training batch size).       |
 | `sic_min_bkg_events`                                                | `100`                                | Minimum background events for SIC metric computation.              |
 | `debug`                                                             | `False`                              | Enables verbose debugging callback and sampler diagnostics.        |
+| `loss_gamma`                                                        | `0.0`                                | Focal-loss gamma (``0`` reduces to standard cross-entropy).        |
 | `log_level`                                                         | `logging.INFO`                       | Logging level set before runner diagnostics.                       |
 | `**classifier_kwargs`                                               | —                                    | Additional arguments forwarded directly to `EvenetLiteClassifier`. |
 

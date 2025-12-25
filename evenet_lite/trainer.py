@@ -87,6 +87,7 @@ class TrainerConfig:
     compute_physics_metrics: bool = True
     physics_bins: int = 1000
     sic_min_bkg_events: int = 100
+    loss_gamma: float = 0.0
     eval_batch_size: Optional[int] = None
     eval_output_path: Optional[str] = None
     save_top_k: int = 0
@@ -898,7 +899,7 @@ class Trainer:
                                   f"[Rank {self.rank}] Non-finite logits detected\n"
                                   f"min={outputs.min().item()}, max={outputs.max().item()}"
                                   )
-                loss = compute_loss(outputs, targets, weight_tensor)
+                loss = compute_loss(outputs, targets, weight_tensor, gamma=self.config.loss_gamma)
                 if training:
                     optimizers = self.optimizers or ([self.optimizer] if self.optimizer else [])
                     for optimizer in optimizers:
@@ -1244,7 +1245,7 @@ class Trainer:
             finite_mask = torch.isfinite(weights)
             valid_weight_tensor = weights if torch.all(finite_mask) else None
 
-        loss = compute_loss(preds, labels, valid_weight_tensor)
+        loss = compute_loss(preds, labels, valid_weight_tensor, gamma=self.config.loss_gamma)
         accuracy = compute_accuracy(preds, labels)
         metrics: Dict[str, float] = {"loss": float(loss.item()), "accuracy": float(accuracy)}
 

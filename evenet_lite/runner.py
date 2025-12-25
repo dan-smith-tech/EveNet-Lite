@@ -60,6 +60,7 @@ def run_evenet_lite_training(
     sic_min_bkg_events: int = 100,
     debug: bool = False,
     log_level: int = logging.INFO,
+    loss_gamma: float = 0.0,
     **classifier_kwargs: Any,
 ) -> EvenetLiteClassifier:
     """Convenience entrypoint for running Evenet-Lite training on prepared tensors.
@@ -100,6 +101,7 @@ def run_evenet_lite_training(
             metric.
         monitor_metric: Metric name used for checkpoint ranking.
         minimize_metric: Whether ``monitor_metric`` should be minimized.
+        loss_gamma: Focal-loss gamma parameter (``0`` reduces to standard cross-entropy).
         debug: Whether to enable verbose ``DebugCallback`` logging.
         log_level: Logging level applied before runner diagnostics and forwarded
             to the classifier when unspecified.
@@ -120,7 +122,7 @@ def run_evenet_lite_training(
     if "log_level" not in classifier_kwargs:
         classifier_kwargs["log_level"] = log_level
 
-    classifier = EvenetLiteClassifier(class_labels=class_labels, **classifier_kwargs)
+    classifier = EvenetLiteClassifier(class_labels=class_labels, loss_gamma=loss_gamma, **classifier_kwargs)
 
     train_payload = (train_features, train_labels, train_weights)
     val_payload = None
