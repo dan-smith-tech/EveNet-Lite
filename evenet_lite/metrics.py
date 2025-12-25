@@ -35,12 +35,38 @@ def _mean_ensemble_logits(logits: torch.Tensor) -> torch.Tensor:
     return logits.mean(dim=0) if logits.dim() == 3 else logits
 
 
-def compute_loss(logits: torch.Tensor, targets: torch.Tensor, weights: Optional[torch.Tensor]) -> torch.Tensor:
+# def compute_loss(logits: torch.Tensor, targets: torch.Tensor, weights: Optional[torch.Tensor]) -> torch.Tensor:
+#     logits, targets, weights = _flatten_ensemble(logits, targets, weights)
+#     per_sample = F.cross_entropy(logits, targets, reduction="none")
+#     if weights is not None:
+#         weights = weights.to(per_sample.device)
+#         return sum(per_sample * weights) / sum(weights)
+#     return per_sample.mean()
+
+def compute_loss(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    weights: Optional[torch.Tensor],
+    gamma: float = 1.5,
+    eps: float = 1e-8,
+) -> torch.Tensor:
     logits, targets, weights = _flatten_ensemble(logits, targets, weights)
-    per_sample = F.cross_entropy(logits, targets, reduction="none")
+
+    # Standard CE per sample
+    ce = F.cross_entropy(logits, targets, reduction="none")
+
+    # p_t = exp(-CE)
+    pt = torch.exp(-ce)
+
+    # Focal modulation
+    focal = (1.0 - pt).clamp(min=eps) ** gamma
+
+    per_sample = focal * ce
+
     if weights is not None:
         weights = weights.to(per_sample.device)
-        return sum(per_sample * weights) / sum(weights)
+        return torch.sum(per_sample * weights) / torch.sum(weights)
+
     return per_sample.mean()
 
 
