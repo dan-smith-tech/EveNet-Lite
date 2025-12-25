@@ -388,7 +388,7 @@ def main() -> None:
     run_evenet_lite_training(
         train_features=train_features,
         train_labels=train_labels,
-        # train_weights=train_weights,
+        train_weights=train_weights,
         val_features=val_features,
         val_labels=val_labels,
         val_weights=val_weights,
