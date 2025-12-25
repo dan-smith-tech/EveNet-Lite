@@ -36,7 +36,7 @@ def _resolve_paths(path_str: str, description: str) -> List[Path]:
 
         options = match.group(1).split(",")
         prefix = pattern[: match.start()]
-        suffix = pattern[match.end() :]
+        suffix = pattern[match.end():]
         expanded: List[str] = []
         for option in options:
             expanded.extend(_expand_braces(prefix + option + suffix))
@@ -49,7 +49,6 @@ def _resolve_paths(path_str: str, description: str) -> List[Path]:
             f"No files matched {description} pattern: {path_str} (expanded to {expanded_patterns})"
         )
 
-    logger.info("%s pattern matched %d files: %s", description, len(matches), ", ".join(str(m) for m in matches))
     return matches
 
 
@@ -57,9 +56,46 @@ def _concat_tensors(data_iter: Iterable[torch.Tensor]) -> torch.Tensor:
     return torch.cat(list(data_iter), dim=0)
 
 
-def _load_split(sig_paths: List[Path], bkg_paths: List[Path]) -> FeatureBundle:
-    sig_parts = [torch.load(p) for p in sig_paths]
-    bkg_parts = [torch.load(p) for p in bkg_paths]
+BKG_META = {
+    "tt1l": {
+        "xsec": 365.35,
+        "nEvent": 144_722_000,
+    },
+    "DYBJets_pt100to200": {
+        "xsec": 3.222,
+        "nEvent": 8_848_155,
+    },
+    "DYBJets_pt200toInf": {
+        "xsec": 0.6181,
+        "nEvent": 887_122,
+    },
+    "ggHtautau": {
+        "xsec": 3.08,
+        "nEvent": 6_439_000,
+    },
+    "VBFHtautau": {
+        "xsec": 0.237,
+        "nEvent": 1_500_000,
+    },
+}
+
+def _match_bkg_sample(path: Path) -> str:
+    path_str = str(path)
+    for name in BKG_META:
+        if name in path_str:
+            return name
+    raise ValueError(f"Cannot match background sample for path: {path}")
+
+def _make_sample_weights(path: Path, n_events: int) -> torch.Tensor:
+    sample = _match_bkg_sample(path)
+    meta = BKG_META[sample]
+    # w = meta["xsec"] / meta["nEvent"]
+    w = meta["xsec"] / meta["nEvent"] * 1000 * 36
+    return torch.full((n_events,), w, dtype=torch.float32)
+
+def _load_split(sig_paths: List[Path], bkg_paths: List[Path]):
+    sig_parts = [torch.load(p, weights_only=False, map_location="cpu") for p in sig_paths]
+    bkg_parts = [torch.load(p, weights_only=False, map_location="cpu") for p in bkg_paths]
 
     available_keys = {key for part in [*sig_parts, *bkg_parts] for key in part.keys()}
     requested_keys = ["x", "x_mask", "global", "params"]
@@ -70,23 +106,51 @@ def _load_split(sig_paths: List[Path], bkg_paths: List[Path]) -> FeatureBundle:
             continue
         alias = "globals" if key == "global" else key
         features[alias] = _concat_tensors(
-            [*(part[key] for part in sig_parts if key in part), *(part[key] for part in bkg_parts if key in part)]
+            [*(part[key] for part in sig_parts),
+             *(part[key] for part in bkg_parts)]
         )
+
+    # labels
+    n_sig = sum(len(part["x"]) for part in sig_parts)
+    n_bkg = sum(len(part["x"]) for part in bkg_parts)
 
     labels = torch.cat(
         [
-            torch.ones(sum(len(part["x"]) for part in sig_parts), device=features["x"].device),
-            torch.zeros(sum(len(part["x"]) for part in bkg_parts), device=features["x"].device),
+            torch.ones(n_sig),
+            torch.zeros(n_bkg),
         ],
         dim=0,
     )
-    return features, labels
+
+    # ---- weights (physics-correct) ----
+    sig_weights = torch.ones(n_sig, dtype=torch.float32)
+
+    bkg_weights = []
+    for path, part in zip(bkg_paths, bkg_parts):
+        n = len(part["x"])
+        bkg_weights.append(_make_sample_weights(path, n))
+
+    weights = torch.cat([sig_weights, *bkg_weights], dim=0)
+
+    return features, labels, weights
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="DDP-friendly Evenet-Lite runner for NERSC")
     parser.add_argument("--train-sig", type=str, required=True, help="Path or glob pattern to signal training tensor (.pt)")
     parser.add_argument("--train-bkg", type=str, required=True, help="Path or glob pattern to background training tensor (.pt)")
+    parser.add_argument(
+        "--train-fraction",
+        type=float,
+        default=0.7,
+        help="Fraction of the training split to use for fitting (rest used for validation)",
+    )
+    parser.add_argument(
+        "--split-seed",
+        type=int,
+        default=42,
+        help="Random seed used when splitting the training set into train/validation",
+    )
     parser.add_argument("--val-sig", type=str, help="Optional path or glob pattern to signal validation tensor (.pt)")
     parser.add_argument("--val-bkg", type=str, help="Optional path or glob pattern to background validation tensor (.pt)")
     parser.add_argument("--epochs", type=int, default=3, help="Number of training epochs")
@@ -137,6 +201,11 @@ def parse_args() -> argparse.Namespace:
         help="Optional YAML/JSON file providing feature names for each input group",
     )
     parser.add_argument(
+        "--normalization-stats",
+        type=Path,
+        help="Optional YAML/JSON file with precomputed normalization stats to pass to the trainer",
+    )
+    parser.add_argument(
         "--normalization-rules",
         type=Path,
         help="Optional YAML/JSON file with normalization rules to pass to the trainer",
@@ -175,7 +244,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-lr", type=float, default=0.0, help="Minimum learning rate for scheduler")
     parser.add_argument("--global-input-dim", type=int, default=10, help="Number of global features")
     parser.add_argument("--sequential-input-dim", type=int, default=7, help="Number of sequential features per object")
-    parser.add_argument("--sic-min-bkg-events", type=int, default=100, help="Minimum background events for SIC")
+    parser.add_argument("--sic-min-bkg-events", type=int, default=10, help="Minimum background events for SIC")
     parser.add_argument(
         "--use-wandb",
         action=argparse.BooleanOptionalAction,
@@ -218,6 +287,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--num-workers", type=int, default=0, help="Number of workers for data loading"
     )
+    parser.add_argument("--n-ensemble", type=int, default=1, help="Number of ensemble members in the EveNet-Lite model")
+    parser.add_argument(
+        "--ensemble-mode",
+        type=str,
+        choices=["independent", "shared_backbone"],
+        default="independent",
+        help="Whether ensemble heads share a backbone or are fully independent",
+    )
 
     return parser.parse_args()
 
@@ -228,6 +305,7 @@ def main() -> None:
 
     feature_names: Optional[Dict[str, Iterable[str]]] = None
     normalization_rules: Optional[Dict[str, Dict[str, str]]] = None
+    normalization_stats: Optional[Dict[str, Any]] = None
 
     def _load_yaml_or_json(path: Path) -> Dict[str, Any]:
         with open(path) as handle:
@@ -238,26 +316,44 @@ def main() -> None:
 
     if args.normalization_rules:
         normalization_rules = _load_yaml_or_json(args.normalization_rules)
+    if args.normalization_stats:
+        normalization_stats = _load_yaml_or_json(args.normalization_stats)
 
-    (train_features, train_labels) = _load_split(
+    (train_features, train_labels, train_weights) = _load_split(
         _resolve_paths(args.train_sig, "train signal"),
         _resolve_paths(args.train_bkg, "train background"),
     )
 
-    val_features = None
-    val_labels = None
-    if args.val_sig and args.val_bkg:
-        val_features, val_labels = _load_split(
-            _resolve_paths(args.val_sig, "validation signal"),
-            _resolve_paths(args.val_bkg, "validation background"),
-        )
+    if not 0 < args.train_fraction < 1:
+        raise ValueError("--train-fraction must be between 0 and 1 (exclusive)")
+
+    total_train = train_labels.shape[0]
+    split_seed = torch.Generator().manual_seed(args.split_seed) if args.split_seed is not None else None
+    perm = torch.randperm(total_train, generator=split_seed)
+    train_size = int(args.train_fraction * total_train)
+    train_idx = perm[:train_size]
+    val_idx = perm[train_size:]
+
+    def _slice_features(features: Dict[str, torch.Tensor], indices: torch.Tensor) -> Dict[str, torch.Tensor]:
+        return {name: tensor[indices] for name, tensor in features.items()}
+
+    val_features = _slice_features(train_features, val_idx)
+    val_labels = train_labels[val_idx]
+    val_weights = train_weights[val_idx] if train_weights is not None else None
+
+    train_features = _slice_features(train_features, train_idx)
+    train_labels = train_labels[train_idx]
+    train_weights = train_weights[train_idx] if train_weights is not None else None
 
     eval_features = None
     eval_labels = None
-    if args.eval_sig and args.eval_bkg:
-        eval_features, eval_labels = _load_split(
-            _resolve_paths(args.eval_sig, "evaluation signal"),
-            _resolve_paths(args.eval_bkg, "evaluation background"),
+    eval_weights = None
+    eval_sig_pattern = args.eval_sig or args.val_sig
+    eval_bkg_pattern = args.eval_bkg or args.val_bkg
+    if eval_sig_pattern and eval_bkg_pattern:
+        eval_features, eval_labels, eval_weights = _load_split(
+            _resolve_paths(eval_sig_pattern, "evaluation signal"),
+            _resolve_paths(eval_bkg_pattern, "evaluation background"),
         )
 
 
@@ -285,16 +381,21 @@ def main() -> None:
             "name": args.wandb_name,
         },
         num_workers=args.num_workers,
+        n_ensemble=args.n_ensemble,
+        ensemble_mode=args.ensemble_mode,
     )
 
     run_evenet_lite_training(
         train_features=train_features,
         train_labels=train_labels,
+        # train_weights=train_weights,
         val_features=val_features,
         val_labels=val_labels,
+        val_weights=val_weights,
         class_labels=args.class_labels,
         feature_names=feature_names,
         normalization_rules=normalization_rules,
+        normalization_stats=normalization_stats,
         sampler=None if args.sampler == "none" else args.sampler,
         epoch_size=args.epoch_size,
         epochs=args.epochs,
@@ -310,6 +411,7 @@ def main() -> None:
         early_stop_patience=args.early_stop_patience,
         eval_features=eval_features,
         eval_labels=eval_labels,
+        eval_weights=eval_weights,
         eval_output_path=str(args.eval_output) if args.eval_output else None,
         eval_batch_size=args.eval_batch_size,
         sic_min_bkg_events=args.sic_min_bkg_events,

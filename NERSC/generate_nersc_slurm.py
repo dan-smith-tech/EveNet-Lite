@@ -11,7 +11,8 @@ import re
 from pathlib import Path
 from typing import Iterable, List, Sequence, Tuple
 
-SIGNAL_PATTERN = re.compile(r"^(?P<dsid>\d+)_NMSSM_.*_MX-(?P<mx>\d+)_MY-(?P<my>\d+)_.*")
+# SIGNAL_PATTERN = re.compile(r"^(?P<dsid>\d+)_NMSSM_.*_MX-(?P<mx>\d+)_MY-(?P<my>\d+)_.*")
+SIGNAL_PATTERN = re.compile(r"MX-(?P<mx>\d+)_MY-(?P<my>\d+)")
 
 
 def parse_args() -> argparse.Namespace:
@@ -19,15 +20,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--data-root",
         type=Path,
-        default=Path("../data"),
+        default=Path("/global/cfs/cdirs/m5019/tihsu"),
         help="Directory containing signal/background subdirectories",
+    )
+    parser.add_argument(
+        "--only-masses",
+        nargs="+",
+        default=None,
+        help="Only run these mass labels, e.g. MX300_MY50 MX500_MY100",
     )
     parser.add_argument(
         "--background",
         dest="backgrounds",
         action="append",
         default=[
-            "67993_TTToSemiLeptonic_TuneCP5_13TeV-powheg-pythia8_RunIISummer20UL16NanoAODv9-106X_mcRun2_asymptotic_v17-v1_NANOAODSIM",
+            "ggHtautau", "VBFHtautau", "DYBJets_pt100to200", "DYBJets_pt200toInf", "tt1l"
         ],
         help="Background directory name (relative to data root). Provide multiple times to include more.",
     )
@@ -41,7 +48,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--time", default="04:00:00", help="Walltime for each array element")
     parser.add_argument("--account", default="m2616_g", help="NERSC account")
     parser.add_argument("--queue", default="regular", help="Slurm queue/partition")
-    parser.add_argument("--nodes", type=int, default=2, help="Nodes per mass-point job")
+    parser.add_argument("--nodes", type=int, default=1, help="Nodes per mass-point job")
     parser.add_argument(
         "--gpus-per-node",
         type=int,
@@ -65,8 +72,8 @@ def parse_args() -> argparse.Namespace:
         default=Path("./checkpoints/"),
         help="Base directory where checkpoints will be stored per mass point",
     )
-    parser.add_argument("--epochs", type=int, default=3, help="Training epochs")
-    parser.add_argument("--batch-size", type=int, default=512, help="Training batch size")
+    parser.add_argument("--epochs", type=int, default=10, help="Training epochs")
+    parser.add_argument("--batch-size", type=int, default=2048, help="Training batch size")
     parser.add_argument(
         "--sampler",
         choices=["weighted", "none"],
@@ -149,6 +156,8 @@ def write_slurm_script(args: argparse.Namespace, signals: List[Tuple[str, str, s
         f"--pretrained-path \\\"{args.pretrained_path}\\\"",
         "--pretrained-source local",
         "--wandb-name \\\"${MASS_POINT}\\\"",
+        "--lr 1e-4 5e-5 1e-5",
+
     ]
     if extra_args:
         command_parts.append(extra_args)
@@ -197,7 +206,7 @@ for idx in "${{!SIGNAL_LABELS[@]}}"; do
 
   cmd="{command_template}"
 
-  srun -l shifter \\
+  srun --nodes={args.nodes} --ntasks-per-node={ntasks_per_node} --gpus-per-node={args.gpus_per_node}  -l shifter \\
     bash -c "source export_DDP_vars.sh && ${{cmd}}"
 done
 """
@@ -226,6 +235,12 @@ srun -l shifter \\
 def main() -> None:
     args = parse_args()
     signals = find_signal_datasets(args.data_root)
+    if args.only_masses is not None:
+        keep = set(args.only_masses)
+        signals = [s for s in signals if s[0] in keep]
+        if not signals:
+            raise SystemExit(f"No matching mass points in --only-masses {args.only_masses}")
+
     write_slurm_script(args, signals)
 
 

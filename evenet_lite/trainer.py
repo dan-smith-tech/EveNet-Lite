@@ -22,6 +22,49 @@ from .optim import (
 )
 
 
+def format_metrics_for_logging(
+        metrics: Dict[str, Any],
+        *,
+        exclude_keys: Optional[Iterable[str]] = None,
+        float_fmt: str = ".5f",
+) -> str:
+    """Format evaluation metrics for clean logging.
+
+    - Excludes selected keys
+    - Nicely formats scalars
+    - Summarizes non-scalars
+    """
+    exclude_keys = set(exclude_keys or [])
+
+    lines = []
+    for key in sorted(metrics.keys()):
+        if key in exclude_keys:
+            continue
+
+        val = metrics[key]
+
+        # Scalars
+        if isinstance(val, (int, float)):
+            lines.append(f"{key:>24s} : {val:{float_fmt}}")
+
+        # 0-dim tensors / numpy scalars
+        elif hasattr(val, "item") and callable(val.item):
+            try:
+                lines.append(f"{key:>24s} : {val.item():{float_fmt}}")
+            except Exception:
+                lines.append(f"{key:>24s} : <tensor>")
+
+        # Arrays / tensors
+        elif hasattr(val, "shape"):
+            lines.append(f"{key:>24s} : array{tuple(val.shape)}")
+
+        # Everything else
+        else:
+            lines.append(f"{key:>24s} : {type(val).__name__}")
+
+    return "\n".join(lines)
+
+
 @dataclass
 class TrainerConfig:
     device: str = "auto"
@@ -269,7 +312,14 @@ class Trainer:
 
     def _load_model_state(self, state: Optional[Dict[str, torch.Tensor]]) -> None:
         if self.world_size > 1:
-            payload = [state]
+            # payload = [state]
+            # dist.broadcast_object_list(payload, src=0)
+            # state = payload[0]
+
+            payload = [None]
+            if dist.get_rank() == 0:
+                payload[0] = state  # must be CPU objects for object broadcast
+
             dist.broadcast_object_list(payload, src=0)
             state = payload[0]
         if state is None:
@@ -493,9 +543,9 @@ class Trainer:
                             for k, v in self._unwrap_model().state_dict().items()
                         }
                 elif (
-                    self.config.early_stop_patience > 0
-                    and best_metric is not None
-                    and metric_value is not None
+                        self.config.early_stop_patience > 0
+                        and best_metric is not None
+                        and metric_value is not None
                 ):
                     epochs_since_improve += 1
                     if epochs_since_improve >= self.config.early_stop_patience:
@@ -512,21 +562,25 @@ class Trainer:
                     )
                     break
 
-            if best_model_state is not None:
-                self._load_model_state(best_model_state)
-                if self.is_rank_zero():
-                    logging.info(
-                        "Restored best model from epoch %d based on %s=%.4f",
-                        (best_epoch or 0) + 1,
-                        self.config.early_stop_metric,
-                        best_metric if best_metric is not None else float("nan"),
-                    )
+            # ALL ranks must participate in the broadcast inside _load_model_state
+            self._load_model_state(best_model_state)
+
+            if self.is_rank_zero() and best_model_state is not None:
+                logging.info(
+                    "Restored best model from epoch %d based on %s=%.4f",
+                    (best_epoch or 0) + 1,
+                    self.config.early_stop_metric,
+                    best_metric if best_metric is not None else float("nan"),
+                )
 
             for cb in self.callbacks:
                 cb.on_train_end(self)
 
+            logging.info("Training finished")
+
             if self.test_dataset is not None:
                 eval_batch_size = self.config.eval_batch_size or batch_size
+                logging.info("Evaluating on test set")
                 eval_metrics = self.evaluate(
                     self.test_dataset,
                     batch_size=eval_batch_size,
@@ -536,6 +590,21 @@ class Trainer:
                     logging.info(
                         "Evaluation finished for test split; metrics available under keys: %s",
                         ", ".join(sorted(eval_metrics.keys())),
+                    )
+
+                    allowed_keys = {
+                        "auc",
+                        "max_sic",
+                        "max_sic_unc",
+                        "accuracy",
+                        "loss",
+                    }
+
+                    logging.info(
+                        "Evaluation metrics (test split):\n%s",
+                        format_metrics_for_logging(
+                            {k: eval_metrics[k] for k in allowed_keys if k in eval_metrics},
+                        ),
                     )
         finally:
             self._finalize_training()
@@ -853,7 +922,8 @@ class Trainer:
             #     metric_sum["nan_loss"] += 1
             metric_count["loss"] += targets.size(0)
 
-            preds = torch.argmax(outputs, dim=1)
+            logits_for_metrics = outputs.mean(dim=0) if outputs.dim() == 3 else outputs
+            preds = torch.argmax(logits_for_metrics, dim=1)
             batch_accuracy = compute_accuracy(outputs, targets)
             if metric_tracker is not None:
                 metric_tracker.update(preds, targets)
@@ -865,7 +935,7 @@ class Trainer:
             reduced_accuracy = self._reduce_mean_scalar(batch_accuracy)
 
             if self.config.compute_physics_metrics:
-                epoch_probs.append(outputs.detach())
+                epoch_probs.append(logits_for_metrics.detach())
                 epoch_targets.append(targets.detach())
                 metric_weights = (
                     weight_tensor.detach()
@@ -1004,6 +1074,11 @@ class Trainer:
     def _collect_predictions(
             self, dataset: EvenetTensorDataset, batch_size: int = 256
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+
+        logging.info("Starting _collect_predictions")
+        logging.info("Dataset size = %d", len(dataset))
+        logging.info("Batch size = %d", batch_size)
+
         original_flag = getattr(dataset, "include_indices", False)
         dataset.include_indices = True
 
@@ -1016,17 +1091,46 @@ class Trainer:
             num_workers=self.config.num_workers,
         )
 
+        if self.debug:
+            logging.info(
+                "world_size=%d, sampler=%s, num_workers=%d",
+                self.world_size,
+                "DistributedSampler" if sampler else "None",
+                self.config.num_workers,
+            )
+
         self.model.to(self.device)
         self.model.eval()
+
         local_outputs: List[torch.Tensor] = []
         local_indices: List[torch.Tensor] = []
 
         with torch.no_grad():
-            for batch in loader:
+            for step, batch in enumerate(loader):
                 features, _, _, *maybe_idx = batch
                 batch_indices = maybe_idx[0] if maybe_idx else None
+
+                if step == 0 and self.debug:
+                    logging.info("First batch received")
+                    if batch_indices is not None:
+                        if self.debug:
+                            logging.info(
+                                "batch_indices shape=%s, min=%d, max=%d",
+                                tuple(batch_indices.shape),
+                                batch_indices.min().item(),
+                                batch_indices.max().item(),
+                            )
+
                 features = self._prepare_features(features)
-                outputs = self._forward(self.model, features).detach().cpu()
+                outputs = self._forward(self.model, features)
+
+                if step == 0 and self.debug:
+                    logging.info("Raw outputs shape = %s", tuple(outputs.shape))
+
+                # Ensemble case: [E, B, C] → [B, C]
+                outputs = outputs.mean(dim=0) if outputs.dim() == 3 else outputs
+                outputs = outputs.detach().cpu()
+
                 local_outputs.append(outputs)
                 if batch_indices is not None:
                     local_indices.append(batch_indices.cpu())
@@ -1034,29 +1138,80 @@ class Trainer:
         dataset.include_indices = original_flag
 
         preds_tensor = torch.cat(local_outputs, dim=0) if local_outputs else torch.empty((0,))
-        index_tensor = torch.cat(local_indices, dim=0) if local_indices else torch.empty((0,), dtype=torch.long)
+        index_tensor = (
+            torch.cat(local_indices, dim=0)
+            if local_indices
+            else torch.empty((0,), dtype=torch.long)
+        )
 
+        if self.debug:
+            logging.info(
+                "Local outputs: preds=%s, indices=%s",
+                tuple(preds_tensor.shape),
+                tuple(index_tensor.shape),
+            )
+
+        # ------------------------
+        # DDP gather
+        # ------------------------
         if self.world_size > 1:
             gathered_indices: List[Optional[torch.Tensor]] = [None for _ in range(self.world_size)]
             gathered_preds: List[Optional[torch.Tensor]] = [None for _ in range(self.world_size)]
+
+            if self.debug:
+                if dist.get_rank() == 0:
+                    logging.info("default pg backend=%s world_size=%d", dist.get_backend(), dist.get_world_size())
+
+                r = dist.get_rank()
+                logging.info("[Rank %d] Before barrier", r)
+                torch.cuda.synchronize()
+                dist.barrier()
+                logging.info("[Rank %d] After barrier", r)
+
+                logging.info("rank=%s backend=%s preds_device=%s idx_device=%s",
+                             dist.get_rank(), dist.get_backend(),
+                             preds_tensor.device, index_tensor.device)
+
             dist.all_gather_object(gathered_indices, index_tensor)
             dist.all_gather_object(gathered_preds, preds_tensor)
 
+            if self.debug:
+                sizes = [
+                    gi.shape if gi is not None else None
+                    for gi in gathered_indices
+                ]
+                logging.info("Gathered index shapes per rank = %s", sizes)
+
             index_tensor = torch.cat([g for g in gathered_indices if g is not None], dim=0)
             preds_tensor = torch.cat([g for g in gathered_preds if g is not None], dim=0)
+
+            if self.debug:
+                logging.info(
+                    "After gather: preds=%s, indices=%s",
+                    tuple(preds_tensor.shape),
+                    tuple(index_tensor.shape),
+                )
 
             if index_tensor.numel() > 0:
                 order = torch.argsort(index_tensor)
                 index_tensor = index_tensor[order]
                 preds_tensor = preds_tensor[order]
 
-                # Remove any duplicated indices introduced by DistributedSampler padding
-                if index_tensor.numel() > 0:
-                    unique_mask = torch.ones_like(index_tensor, dtype=torch.bool)
-                    unique_mask[1:] = index_tensor[1:] != index_tensor[:-1]
-                    unique_positions = torch.nonzero(unique_mask, as_tuple=False).squeeze(1)
-                    index_tensor = index_tensor[unique_positions]
-                    preds_tensor = preds_tensor[unique_positions]
+                unique_mask = torch.ones_like(index_tensor, dtype=torch.bool)
+                unique_mask[1:] = index_tensor[1:] != index_tensor[:-1]
+                unique_positions = torch.nonzero(unique_mask, as_tuple=False).squeeze(1)
+
+                removed = index_tensor.numel() - unique_positions.numel()
+                logging.info("Removed %d duplicated entries", removed)
+
+                index_tensor = index_tensor[unique_positions]
+                preds_tensor = preds_tensor[unique_positions]
+
+        logging.info(
+            "Finished prediction collection: preds=%s, indices=%s",
+            tuple(preds_tensor.shape),
+            tuple(index_tensor.shape),
+        )
 
         return preds_tensor, index_tensor
 
@@ -1108,6 +1263,7 @@ class Trainer:
                     min_bkg_events=self.config.sic_min_bkg_events,
                     log_plots=self.wandb_run is not None,
                     wandb_run=self.wandb_run,
+                    f_name=Path(output_path) / "eval.png",
                 )
             )
 

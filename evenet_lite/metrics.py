@@ -9,7 +9,34 @@ from scipy.special import expit, softmax
 from sklearn.metrics import roc_auc_score
 
 
+def _flatten_ensemble(
+        logits: torch.Tensor, targets: torch.Tensor, weights: Optional[torch.Tensor]
+) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+    """Flatten an ensemble logits tensor to align with repeated targets/weights.
+
+    Shapes
+    ------
+    logits: [E, B, C] -> [E * B, C]
+    targets: [B] -> [E * B]
+    weights: [B] -> [E * B]
+    """
+
+    if logits.dim() == 3:
+        ensemble, batch, channels = logits.shape
+        logits = logits.view(ensemble * batch, channels)
+        targets = targets.repeat(ensemble)
+        if weights is not None:
+            weights = weights.repeat(ensemble)
+    return logits, targets, weights
+
+
+def _mean_ensemble_logits(logits: torch.Tensor) -> torch.Tensor:
+    """Average ensemble logits along the ensemble dimension."""
+    return logits.mean(dim=0) if logits.dim() == 3 else logits
+
+
 def compute_loss(logits: torch.Tensor, targets: torch.Tensor, weights: Optional[torch.Tensor]) -> torch.Tensor:
+    logits, targets, weights = _flatten_ensemble(logits, targets, weights)
     per_sample = F.cross_entropy(logits, targets, reduction="none")
     if weights is not None:
         weights = weights.to(per_sample.device)
@@ -18,6 +45,7 @@ def compute_loss(logits: torch.Tensor, targets: torch.Tensor, weights: Optional[
 
 
 def compute_accuracy(logits: torch.Tensor, targets: torch.Tensor) -> float:
+    logits = _mean_ensemble_logits(logits)
     preds = logits.argmax(dim=1)
     correct = (preds == targets).sum().item()
     return correct / max(1, targets.numel())
@@ -226,6 +254,38 @@ def compute_sic_from_scores(
     }
 
 
+def find_score_at_min_bkg(
+        scores: np.ndarray,
+        targets: np.ndarray,
+        weights: Optional[np.ndarray],
+        min_bkg_events: float,
+) -> Optional[float]:
+    """Return score threshold where remaining bkg yield == min_bkg_events."""
+    bkg_mask = targets == 0
+
+    bkg_scores = scores[bkg_mask]
+    bkg_weights = weights[bkg_mask] if weights is not None else np.ones_like(bkg_scores)
+
+    if bkg_scores.size == 0:
+        return None
+
+    # Sort by score descending (tightest cut first)
+    order = np.argsort(-bkg_scores)
+    bkg_scores = bkg_scores[order]
+    bkg_weights = bkg_weights[order]
+
+    # Cumulative remaining background
+    cum_bkg = np.cumsum(bkg_weights)
+
+    # Find first point where we exceed min_bkg_events
+    idx = np.searchsorted(cum_bkg, min_bkg_events)
+
+    if idx >= len(bkg_scores):
+        return None
+
+    return bkg_scores[idx]
+
+
 def plot_sic_diagnostics(
         targets: np.ndarray,
         scores: np.ndarray,
@@ -326,11 +386,26 @@ def plot_sic_diagnostics(
     axs[1, 1].set_xlim(0.0, 1.0)
 
     if min_bkg_line_x is not None:
-        for ax in axs[:2, :2].flat:
-            ax.axvline(min_bkg_line_x, color="gray", linestyle="--", alpha=0.5, label=f"bkg={min_bkg_events:5d}")
+        score_cut = find_score_at_min_bkg(
+            scores=scores,
+            targets=targets,
+            weights=weights,
+            min_bkg_events=min_bkg_events,
+        )
+
+        if score_cut is not None:
+            axs[1, 1].axvline(
+                score_cut,
+                color="gray", linestyle="--", alpha=0.75, lw=2,
+                label=f"bkg = {min_bkg_events:g}",
+            )
+
+        for ax in [axs[0,0], axs[0,1], axs[1,0]]:
+            ax.axvline(min_bkg_line_x, color="gray", linestyle="--", alpha=0.75, lw=2, label=f"bkg={min_bkg_events:5d}")
         axs[0, 0].legend(loc="lower right")
         axs[0, 1].legend(loc="upper right")
         axs[1, 0].legend(loc="upper right")
+
 
     for ax in axs.flat:
         ax.grid(True, alpha=0.3)
@@ -353,6 +428,9 @@ def calculate_physics_metrics(
         f_name: Optional[str] = None,
 ) -> Dict[str, np.ndarray]:
     """Calculates AUC and Max SIC with statistical uncertainty."""
+
+    if logits.ndim == 3:
+        logits = logits.mean(axis=0)
 
     # Convert logits → scores
     if logits.ndim == 1 or logits.shape[1] == 1:

@@ -25,14 +25,29 @@ def _collect_parameters(model: torch.nn.Module, module_names: Iterable[str]) -> 
     seen: set[int] = set()
     for name in module_names:
         base_model = unwrap_model(model)
-        module = getattr(base_model, name, None)
-        if module is None:
+        modules_to_collect: List[torch.nn.Module] = []
+        direct_module = getattr(base_model, name, None)
+        if direct_module is not None:
+            modules_to_collect.append(direct_module)
+        elif hasattr(base_model, "backbone"):
+            backbone_module = getattr(getattr(base_model, "backbone"), name, None)
+            if backbone_module is not None:
+                modules_to_collect.append(backbone_module)
+        if hasattr(base_model, "models"):
+            for member in getattr(base_model, "models"):
+                submodule = getattr(member, name, None)
+                if submodule is None and hasattr(member, "backbone"):
+                    submodule = getattr(member.backbone, name, None)
+                if submodule is not None:
+                    modules_to_collect.append(submodule)
+        if not modules_to_collect:
             logging.warning("Requested module '%s' not found on model; skipping.", name)
             continue
-        for param in module.parameters():
-            if id(param) not in seen:
-                params.append(param)
-                seen.add(id(param))
+        for module in modules_to_collect:
+            for param in module.parameters():
+                if id(param) not in seen:
+                    params.append(param)
+                    seen.add(id(param))
     return params
 
 

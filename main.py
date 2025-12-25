@@ -77,7 +77,7 @@ def _match_bkg_sample(path: Path) -> str:
 def _make_sample_weights(path: Path, n_events: int) -> torch.Tensor:
     sample = _match_bkg_sample(path)
     meta = BKG_META[sample]
-    w = meta["xsec"] / meta["nEvent"]
+    w = meta["xsec"] / meta["nEvent"] * 1000 * 36
     return torch.full((n_events,), w, dtype=torch.float32)
 
 def _load_split(sig_paths: List[Path], bkg_paths: List[Path]):
@@ -227,18 +227,20 @@ if __name__ == '__main__':
         },
         global_input_dim=10,
         num_workers=0,
+        n_ensemble=3,
+        ensemble_mode="shared_backbone",
     )
 
     clf.fit(
         train_data=(train_features, train_labels, None),
         val_data=(val_features, val_labels, val_weights),
-        # eval_data=(X_val, y_val, None),
+        eval_data=(val_features, val_labels, val_weights),
         # callbacks=[ParameterRandomizationCallback(min_values=[300, 500], max_values=[800, 1200])],
         callbacks=[],
-        epochs=10,
+        epochs=1,
         batch_size=128,
         sampler="weighted",  # or None
-        epoch_size=None,  # or None,
+        epoch_size=1280,  # or None,
         save_top_k=1,
         checkpoint_every=1,
         # checkpoint_path="./checkpoint",

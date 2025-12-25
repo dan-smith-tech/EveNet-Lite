@@ -99,6 +99,8 @@ class EvenetLiteClassifier:
             pretrained_filename: Optional[str] = DEFAULT_HF_REPO_FILENAME,
             pretrained_cache_dir: Optional[str] = None,
             num_workers: int = 0,
+            n_ensemble: int = 1,
+            ensemble_mode: str = "independent",
     ) -> None:
         root_logger = logging.getLogger()
         log_format = "%(asctime)s | %(levelname)s | %(message)s"
@@ -123,7 +125,9 @@ class EvenetLiteClassifier:
                 config=DotDict(config),
                 global_input_dim=global_input_dim,
                 sequential_input_dim=sequential_input_dim,
-                cls_label=class_labels
+                cls_label=class_labels,
+                n_ensemble=n_ensemble,
+                ensemble_mode=ensemble_mode,
             )
         else:
             self.model = model
@@ -361,7 +365,9 @@ class EvenetLiteClassifier:
         """Partially load a state dict when shapes match and report a summary."""
 
         logger = logging.getLogger(__name__)
-        ckpt_state = {k.replace("model.", ""): v for k, v in state.items()}
+        ckpt_state = {k.replace("model.", "").replace("module.", ""): v for k, v in state.items()}
+        if hasattr(self.model, "expand_state_dict"):
+            ckpt_state = self.model.expand_state_dict(ckpt_state)
         model_state = self.model.state_dict()
 
         loaded_keys: List[str] = []
@@ -405,10 +411,26 @@ class EvenetLiteClassifier:
         logger.info("All components loaded: %s", "YES" if fully_loaded else "NO")
 
         if model_state:
-            total_groups = Counter([k.split(".")[0] for k in model_state])
-            loaded_groups = Counter([k.split(".")[0] for k in loaded_keys])
-            missing_groups = Counter([k.split(".")[0] for k in missing_keys])
-            mismatch_groups = Counter([k.split(".")[0] for k in shape_mismatch_keys])
+            component_copies = {}
+            if hasattr(self.model, "component_copies"):
+                component_copies = self.model.component_copies()
+
+            def _component_prefix(key: str) -> str:
+                tokens = key.split(".")
+                if tokens and tokens[0] == "models" and len(tokens) >= 3:
+                    tokens = tokens[2:]  # drop "models.<idx>"
+                if tokens and tokens[0] == "backbone":
+                    tokens = tokens[1:]
+                if tokens and tokens[0] in {"Classification", "GlobalEmbedding", "PET", "ObjectEncoder"}:
+                    if len(tokens) > 1 and tokens[1].isdigit():
+                        return tokens[0]
+                    return tokens[0]
+                return tokens[0] if tokens else key
+
+            total_groups = Counter([_component_prefix(k) for k in model_state])
+            loaded_groups = Counter([_component_prefix(k) for k in loaded_keys])
+            missing_groups = Counter([_component_prefix(k) for k in missing_keys])
+            mismatch_groups = Counter([_component_prefix(k) for k in shape_mismatch_keys])
 
             logger.info("--- Breakdown ---")
             for prefix, total in total_groups.items():
@@ -416,9 +438,11 @@ class EvenetLiteClassifier:
                 missing_count = missing_groups.get(prefix, 0)
                 mismatch_count = mismatch_groups.get(prefix, 0)
                 not_loaded = total - loaded_count
+                copies = component_copies.get(prefix, 1)
                 logger.info(
-                    "• %s: %d/%d loaded (%d not loaded: %d missing, %d mismatched)",
+                    "• %s [copies=%d]: %d/%d loaded (%d not loaded: %d missing, %d mismatched)",
                     prefix.ljust(15),
+                    copies,
                     loaded_count,
                     total,
                     not_loaded,
