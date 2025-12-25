@@ -13,6 +13,7 @@ import time
 
 # --- PyTorch & EveNet Imports ---
 import torch
+import torch.distributed as dist
 
 try:
     from evenet_lite import run_evenet_lite_training
@@ -541,7 +542,12 @@ def run_pipeline(args):
     module_lists = ["Classification", "ObjectEncoder", "PET", "GlobalEmbedding"] if not args.pretrain else [["PET"], ["ObjectEncoder",  "GlobalEmbedding"], ["Classification"]]
     weight_decay = [1e-4 for x in learning_rates]
     # ---- train ----
-    logger.info(">>> Starting EveNet Training...")
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    if world_size > 1 and torch.cuda.is_available():
+        torch.cuda.set_device(local_rank)
+    logger.info(f">>> Starting EveNet Training on GPU: {local_rank} [of World: {world_size}]")
+
     classifier = run_evenet_lite_training(
         train_features=train_features,
         train_labels=d_train["y"],
@@ -584,6 +590,8 @@ def run_pipeline(args):
     )
 
     # ---- evaluation data ----
+    def is_rank_zero():
+        return (not dist.is_available()) or (not dist.is_initialized()) or dist.get_rank() == 0
     logger.info(">>> Loading Test Data...")
     d_sig_te = dm.load_data(sig_datasets_eval, "valid")
     d_sig_te = dm.reweight_signals(d_sig_te, logger=logger)
@@ -628,6 +636,10 @@ def run_pipeline(args):
         # ---- predict ----
         print(sub_sig["y"][:10], sub_bkg["y"][:10])
         logits = classifier.predict(eval_features, batch_size=args.batch_size * 8)
+
+        if not is_rank_zero():
+            continue
+
         probs = torch.softmax(logits, dim=1)
         y_pred = probs[:, 1].detach().cpu().numpy()
 
