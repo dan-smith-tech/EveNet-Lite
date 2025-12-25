@@ -220,7 +220,7 @@ class EveNetDatasetManager:
 
             for fp in files:
                 try:
-                    data = torch.load(fp, map_location="cpu")  # force CPU to avoid device mismatch
+                    data = torch.load(fp, map_location="cpu", weights_only=False)  # force CPU to avoid device mismatch
                     if "x" not in data:
                         continue
 
@@ -526,7 +526,7 @@ def run_pipeline(args):
     }
 
     normalize_pt = "norm/normalization_pretrain.pt"
-    normalize_dict = torch.load(normalize_pt, map_location="cpu")
+    normalize_dict = torch.load(normalize_pt, map_location="cpu", weights_only=False)
     normalization_stats = {
         "x": {
             "mean": normalize_dict["input_mean"]["Source"],  # len == num object features
