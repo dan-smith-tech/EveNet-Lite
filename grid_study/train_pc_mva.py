@@ -416,7 +416,7 @@ def prepare_evenet_features(data_dict, parameterize=False):
 
     if parameterize:
         feats["params"] = data_dict["m"]
-        feats["globals"] = torch.cat([data_dict["globals"], data_dict["m"]], dim=1)
+        # feats["globals"] = torch.cat([data_dict["globals"], data_dict["m"]], dim=1)
 
     return feats
 
@@ -509,6 +509,9 @@ def run_pipeline(args):
     val_features = prepare_evenet_features(d_val, args.parameterize)
 
     global_dim = train_features["globals"].shape[1]
+    if args.parameterize:
+        global_dim += train_features["params"].shape[1]
+    print("global_dim", global_dim)
 
     # ---- callbacks ----
     callbacks = []
@@ -535,12 +538,40 @@ def run_pipeline(args):
         "globals": {
             "mean": normalize_dict["input_mean"]["Conditions"],  # len == num global features
             "std": normalize_dict["input_std"]["Conditions"],
+        }
+    }
+
+    normalization_rules = {
+        "x": {
+            "energy": "log_normalize",
+            "pt": "log_normalize",
+            "eta": "normalize",
+            "phi": "normalize_uniform"
+        },
+        "globals": {
+            "met": "log_normalize",
+            "met_phi": "normalize",
+            "HT": "log_normalize",
+            "HT_lep": "log_normalize",
+            "M_all": "log_normalize",
+            "M_leps": "log_normalize",
+            "M_bjets": "log_normalize"
         },
     }
+    if args.parameterize:
+        normalization_stats["params"] = {
+            "mean": d_train["m"].mean(axis=1),
+            "std": d_train["m"].std(axis=1)
+        }
+        normalization_rules["params"] = {
+            "feature_0": "normalize",
+            "feature_1": "normalize"
+        }
+
 
     learning_rate = args.learning_rate if hasattr(args, 'learning_rate') else 1e-3
     learning_rates = [learning_rate] if not args.pretrain else [0.1 * learning_rate, 0.3 * learning_rate, learning_rate]
-    module_lists = ["Classification", "ObjectEncoder", "PET", "GlobalEmbedding"] if not args.pretrain else [["PET"], ["ObjectEncoder",  "GlobalEmbedding"], ["Classification"]]
+    module_lists = [["Classification", "ObjectEncoder", "PET", "GlobalEmbedding"]] if not args.pretrain else [["PET"], ["ObjectEncoder",  "GlobalEmbedding"], ["Classification"]]
     weight_decay = [1e-4 for x in learning_rates]
     # ---- train ----
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
@@ -571,6 +602,7 @@ def run_pipeline(args):
         save_top_k=1,
         monitor_metric="val_loss",
         sic_min_bkg_events = 10,
+        normalization_rules = normalization_rules if args.parameterize else None,
         normalization_stats = normalization_stats,
         use_wandb=True,
         wandb = {

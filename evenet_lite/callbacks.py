@@ -119,7 +119,7 @@ class ParameterRandomizationCallback(Callback):
             return
         if hasattr(trainer, "train_dataset"):
             raw_params = torch.as_tensor(trainer.train_dataset.raw_features.get(self.param_key))
-            targets = torch.as_tensor(trainer.train_dataset.get("labels"))
+            targets = torch.as_tensor(trainer.train_dataset.labels)
             if raw_params is not None and targets is not None:
                 signal_mask = targets != self.background_label
                 signal_params = raw_params[signal_mask]
@@ -163,10 +163,12 @@ class ParameterRandomizationCallback(Callback):
 
         params = features[self.param_key]
         if params.dim() < 2:
+            self._maybe_warm("wrong param dim")
             return
 
         bounds = self._resolve_bounds(params.shape[-1], params.device)
         if bounds is None:
+            self._maybe_warm("no bounds")
             return
 
 
@@ -174,6 +176,7 @@ class ParameterRandomizationCallback(Callback):
         if not self._pool_from_signal or self._pool_tensor is None:
             min_values, max_values = bounds[0], bounds[1]
             if not torch.any(bkg_mask):
+                self._maybe_warn("no background for parameterization assigning")
                 return
 
             random_raw = torch.rand((int(bkg_mask.sum().item()), params.shape[-1]), device=params.device,
@@ -181,6 +184,7 @@ class ParameterRandomizationCallback(Callback):
             replacement = random_raw * (max_values - min_values) + min_values
         else:
             if not torch.any(bkg_mask):
+                self._maybe_warn("no background for parametrization assigning")
                 return
             pool = self._pool_tensor.to(device=params.device, dtype=params.dtype)
             pool_dim = pool.shape[-1]
@@ -195,6 +199,7 @@ class ParameterRandomizationCallback(Callback):
                 n_bkg = int(bkg_mask.sum().item())
                 idx = torch.randint(0, pool.shape[0], (n_bkg,), device=params.device)
                 replacement = pool[idx]
+        print("replacement", replacement)
 
 
         normalizer = next((cb.normalizer for cb in trainer.callbacks if hasattr(cb, "normalizer")), None)
