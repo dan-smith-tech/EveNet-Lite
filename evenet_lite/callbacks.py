@@ -55,6 +55,7 @@ class ParameterRandomizationCallback(Callback):
             min_values: Optional[Sequence[float]] = None,
             max_values: Optional[Sequence[float]] = None,
             apply_to_validation: bool = True,
+            pool_from_signal: bool = False,
     ) -> None:
         self.param_key = param_key
         self.background_label = background_label
@@ -66,6 +67,8 @@ class ParameterRandomizationCallback(Callback):
         self._resolved_max: Optional[torch.Tensor] = None
         self._warned_missing_params = False
         self._warned_bounds = False
+        self._pool_from_signal = pool_from_signal
+        self._pool_tensor: Optional[torch.Tensor] = None
 
     def _maybe_warn(self, message: str) -> None:
         if not self._warned_missing_params:
@@ -111,6 +114,19 @@ class ParameterRandomizationCallback(Callback):
 
         return torch.stack([min_values, max_values])
 
+    def _find_signal_pools(self, trainer: "Trainer") -> None:
+        if not self._pool_from_signal:
+            return
+        if hasattr(trainer, "train_dataset"):
+            raw_params = torch.as_tensor(trainer.train_dataset.raw_features.get(self.param_key))
+            targets = torch.as_tensor(trainer.train_dataset.get("labels"))
+            if raw_params is not None and targets is not None:
+                signal_mask = targets != self.background_label
+                signal_params = raw_params[signal_mask]
+                pool = torch.unique(signal_params, dim=0).float()
+                self._pool_tensor = pool
+                print("Found signal pool with", self._pool_tensor.shape[0], "unique entries.")
+
     def on_train_start(self, trainer: "Trainer") -> None:
         if (self._configured_min is None or self._configured_max is None) and hasattr(
                 trainer, "train_dataset"
@@ -124,6 +140,8 @@ class ParameterRandomizationCallback(Callback):
                     "ParameterRandomizationCallback could not infer parameter bounds because the training dataset "
                     f"does not include '{self.param_key}'."
                 )
+        if self._pool_from_signal:
+            self._find_signal_pools(trainer)
 
     def on_batch_start(
             self, trainer: "Trainer", epoch: int, batch_idx: int, batch: Dict[str, Any], training: bool
@@ -151,14 +169,33 @@ class ParameterRandomizationCallback(Callback):
         if bounds is None:
             return
 
-        min_values, max_values = bounds[0], bounds[1]
-        bkg_mask = targets == self.background_label
-        if not torch.any(bkg_mask):
-            return
 
-        random_raw = torch.rand((int(bkg_mask.sum().item()), params.shape[-1]), device=params.device,
-                                dtype=params.dtype)
-        replacement = random_raw * (max_values - min_values) + min_values
+        bkg_mask = targets == self.background_label
+        if not self._pool_from_signal or self._pool_tensor is None:
+            min_values, max_values = bounds[0], bounds[1]
+            if not torch.any(bkg_mask):
+                return
+
+            random_raw = torch.rand((int(bkg_mask.sum().item()), params.shape[-1]), device=params.device,
+                                    dtype=params.dtype)
+            replacement = random_raw * (max_values - min_values) + min_values
+        else:
+            if not torch.any(bkg_mask):
+                return
+            pool = self._pool_tensor.to(device=params.device, dtype=params.dtype)
+            pool_dim = pool.shape[-1]
+            param_dim = params.shape[-1]
+            if pool_dim != param_dim:
+                self._maybe_warn(
+                    f"ParameterRandomizationCallback signal pool dim {pool_dim} does not match param dim {param_dim}; "
+                    "skipping randomization."
+                )
+                return
+            else:
+                n_bkg = int(bkg_mask.sum().item())
+                idx = torch.randint(0, pool.shape[0], (n_bkg,), device=params.device)
+                replacement = pool[idx]
+
 
         normalizer = next((cb.normalizer for cb in trainer.callbacks if hasattr(cb, "normalizer")), None)
         if normalizer is not None and hasattr(normalizer, "transform"):

@@ -56,7 +56,8 @@ runner or your own loop; the only requirements are:
    global dimension (and update ``global_input_dim`` accordingly).
 2. Attach ``ParameterRandomizationCallback`` when fitting to resample background parameters each batch while
    leaving signal parameters intact. Optionally set ``min_values``/``max_values`` (one value or a list per
-   parameter); otherwise the callback infers bounds from the training set.
+   parameter); otherwise the callback infers bounds from the training set. Or set ``pool_from_signal`` to sample 
+   directly from signal pool (uniformly sampled from all discreted parameter combinations in the signal events).
 3. Keep validation randomization on (default) to match training, or set ``apply_to_validation=False`` if you
    prefer fixed parameters there. Evaluation is untouched.
 
