@@ -199,7 +199,6 @@ class ParameterRandomizationCallback(Callback):
                 n_bkg = int(bkg_mask.sum().item())
                 idx = torch.randint(0, pool.shape[0], (n_bkg,), device=params.device)
                 replacement = pool[idx]
-        print("replacement", replacement)
 
 
         normalizer = next((cb.normalizer for cb in trainer.callbacks if hasattr(cb, "normalizer")), None)
