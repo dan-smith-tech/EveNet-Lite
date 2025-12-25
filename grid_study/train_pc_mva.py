@@ -581,7 +581,7 @@ def run_pipeline(args):
         },
         pretrained=args.pretrain,
         pretrained_path="/global/cfs/cdirs/m5019/avencast/Checkpoints/checkpoints.20M.ablation.4.newcls/last.ckpt",
-
+        pretrain_source="local",
         module_lists = module_lists,
         lr = learning_rates,
         weight_decay=weight_decay,
