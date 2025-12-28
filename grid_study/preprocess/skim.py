@@ -5,6 +5,8 @@ import awkward as ak
 import json
 from collections import OrderedDict
 from multiprocessing import Pool
+
+import torch
 from tqdm import tqdm
 import numpy as np
 import uproot
@@ -65,9 +67,9 @@ def vec(
     if eta_cut is not None:
         mask = mask & (abs(eta) < eta_cut)
 
-    pt   = pt[mask]
-    eta  = eta[mask]
-    phi  = phi[mask]
+    pt = pt[mask]
+    eta = eta[mask] if pre != "MissingET" else ak.zeros_like(pt)
+    phi = phi[mask]
     mass = mass[mask]
     data = dict(pt=pt, eta=eta, phi=phi, mass=mass)
 
@@ -235,13 +237,104 @@ def build_event_tensor(objs):
     globals = build_globals(objs)
 
     return {
-        "x": x.astype(np.float32),
-        "x_mask": x_mask.astype(bool),
-        "globals": globals.astype(np.float32),
+        "x": torch.tensor(x, dtype=torch.float32),
+        "x_mask": torch.tensor(x_mask, dtype=torch.bool),
+        "globals": torch.tensor(globals, dtype=torch.float32),
+        "weights": torch.ones(len(x), dtype=torch.float32)
     }
 
 
-def save_shard(event_tensor, outdir, shard_id, folder_name):
+def build_event_tabular(objs):
+    l1 = ak.firsts(objs['leptons'])
+    tau1 = ak.firsts(objs['taus'])
+    met = ak.firsts(objs["met"])
+
+    bjets = objs["bjets"]
+    ljets = objs["ljets"]
+    # pT ordering (descending)
+    bjets = bjets[ak.argsort(bjets.pt, axis=1, ascending=False)]
+    ljets = ljets[ak.argsort(ljets.pt, axis=1, ascending=False)]
+    nb = ak.num(bjets)
+    nl = ak.num(ljets)
+    zero_jet = ak.zip(
+        {field: ak.zeros_like(ak.firsts(bjets).pt) for field in bjets.fields},
+        with_name="Momentum4D",
+    )
+    b1 = ak.where(nb >= 1, ak.firsts(bjets), zero_jet, )
+    b2 = ak.where(
+        nb >= 2,
+        ak.pad_none(bjets, 2)[:, 1],  # Case: ≥2 b-jets
+        ak.where(
+            (nb == 1) & (nl >= 1),
+            ak.firsts(ak.pad_none(ljets, 1)),  # Case: 1 b-jet + ≥1 light jet
+            zero_jet,  # Otherwise
+        ),
+    )
+
+    # 4. Feature Calculation
+    # Wrap selected objects
+    def get_p4(obj):
+        return ak.zip(
+            {"pt": obj.pt, "eta": obj.eta, "phi": obj.phi, "mass": obj.mass},
+            with_name="Momentum4D"
+        )
+
+    l1_p4 = get_p4(l1)
+    t1_p4 = get_p4(tau1)
+    b1_p4 = get_p4(b1)
+    b2_p4 = get_p4(b2)
+    met_p4 = get_p4(met)
+
+    # Variables
+    mbb = (b1_p4 + b2_p4).mass
+    # mHH proxy: l + t + b + b + met
+    mHH = (l1_p4 + t1_p4 + b1_p4 + b2_p4 + met_p4).mass
+    m_tautau_visible = (l1_p4 + t1_p4).mass
+
+    dr_ltau = l1_p4.deltaR(t1_p4)
+    dr_bb = b1_p4.deltaR(b2_p4)
+    dpt_ltau = abs(l1_p4.pt - t1_p4.pt)
+    b2_pt = b2.pt
+    b1_pt = b1.pt
+    l1_pt = l1.pt
+    t1_pt = tau1.pt
+
+    dphi_l_met = abs(l1_p4.deltaphi(met_p4))
+    mT_W = np.sqrt(2 * l1.pt * met.pt * (1 - np.cos(dphi_l_met)))
+
+    ltau_sys = l1_p4 + t1_p4
+    bb_sys = b1_p4 + b2_p4
+    dphi_ltau_bb = abs(ltau_sys.deltaphi(bb_sys))
+
+    mb1l = (b1_p4 + l1_p4).mass
+    mb1t = (b1_p4 + t1_p4).mass
+    mb2l = (b2_p4 + l1_p4).mass
+    mb2t = (b2_p4 + t1_p4).mass
+    dr_b1l = b1_p4.deltaR(l1_p4)
+    dr_b1t = b1_p4.deltaR(t1_p4)
+    dr_b2l = b2_p4.deltaR(l1_p4)
+    dr_b2t = b2_p4.deltaR(t1_p4)
+
+    def safe(arr): return ak.to_numpy(ak.fill_none(arr, -999.0)).astype(np.float32)
+
+    data = {
+        "xgb_mHH_proxy": safe(mHH), "xgb_mbb": safe(mbb),
+        "xgb_mtautau_visible": safe(m_tautau_visible),
+        "xgb_dR_ltau": safe(dr_ltau), "xgb_dR_bb": safe(dr_bb),
+        "xgb_dpt_ltau": safe(dpt_ltau), "xgb_b2_pt": safe(b2_pt), "xgb_b1_pt": safe(b1_pt),
+        "xgb_mT_W": safe(mT_W), "xgb_met": safe(met.pt),
+        "xgb_dphi_ltau_bb": safe(dphi_ltau_bb), "xgb_dphi_l_met": safe(dphi_l_met),
+        "l1_pt": safe(l1_pt), "t1_pt": safe(t1_pt),
+        "xgb_mb1l": safe(mb1l), "xgb_mb1t": safe(mb1t),
+        "xgb_mb2l": safe(mb2l), "xgb_mb2t": safe(mb2t),
+        "xgb_dr_b1l": safe(dr_b1l), "xgb_dr_b1t": safe(dr_b1t),
+        "xgb_dr_b2l": safe(dr_b2l), "xgb_dr_b2t": safe(dr_b2t)
+    }
+
+    return data
+
+
+def save_shard(event_tensor, outdir, shard_id, folder_name, method):
     n = len(next(iter(event_tensor.values())))
     splits = {
         "train": np.arange(n)[::2],
@@ -249,10 +342,20 @@ def save_shard(event_tensor, outdir, shard_id, folder_name):
     }
 
     for split, idx in splits.items():
-        out = {k: v[idx] for k, v in event_tensor.items()}
-        d = outdir / split
-        d.mkdir(parents=True, exist_ok=True)
-        np.savez_compressed(d / f"shard_{folder_name}_{shard_id:04d}.npz", **out)
+        out = {}
+        for k, v in event_tensor.items():
+            if isinstance(v, list):
+                out[k] = v
+            else:
+                out[k] = v[idx]
+        if method == "evenet":
+            d = outdir / method / split
+            d.mkdir(parents=True, exist_ok=True)
+            torch.save(out, d / f"shard_{folder_name}_{shard_id:04d}.pt")
+        if method == "xgb":
+            d = outdir / method / split
+            d.mkdir(parents=True, exist_ok=True)
+            np.savez_compressed(d / f"shard_{folder_name}_{shard_id:04d}.npz", **out)
 
 
 def discover_processes(grid_dir: Path):
@@ -289,9 +392,6 @@ def process_one_process(task):
 
     cutflow_total = defaultdict(int)
     shard_id = 0
-
-    (outdir / "train").mkdir(parents=True, exist_ok=True)
-    (outdir / "valid").mkdir(parents=True, exist_ok=True)
 
     FILTER_BRANCHES = [
         # Jets
@@ -335,8 +435,8 @@ def process_one_process(task):
         "MissingET/MissingET.Phi",
     ]
 
-    all_inputs = []
-
+    all_inputs_evenet = []
+    all_input_tabular = []
     for arrays, report in uproot.iterate(
             [f"{f}:Delphes" for f in files],
             filter_name=FILTER_BRANCHES,
@@ -368,24 +468,30 @@ def process_one_process(task):
             "ljets": objects["ljets"][mask],
             "met": objects["met"][mask],
             "jets": objects["jets"][mask],
-
-            # metadata (broadcast-safe)
-            "process": meta["proc"],
-            "is_signal": meta["is_signal"],
-            "m1": meta.get("m1", -1),
-            "m2": meta.get("m2", -1),
         }
 
-        input_tensor = build_event_tensor(event_tensor)
-        all_inputs.append(input_tensor)
+        input_evenet = build_event_tensor(event_tensor)
+        all_inputs_evenet.append(input_evenet)
 
-    keys = all_inputs[0].keys()
+        input_tabular = build_event_tabular(event_tensor)
+        all_input_tabular.append(input_tabular)
 
-    input_tensor = {
-        k: np.concatenate([d[k] for d in all_inputs], axis=0)
-        for k in keys
+    input_tensor_evenet = {
+        k: torch.concat([d[k] for d in all_inputs_evenet], dim=0)
+        for k in all_inputs_evenet[0].keys()
     }
-    save_shard(input_tensor, outdir, shard_id, folder_name)
+    input_tabular = {
+        k: np.concat([d[k] for d in all_input_tabular], axis=0)
+        for k in all_input_tabular[0].keys()
+    }
+    input_tensor_tabular = {
+        "X": np.stack(list(input_tabular.values()), axis=1),
+        "features": list(input_tabular.keys()),
+    }
+    input_tensor_tabular["weights"] = np.ones(len(input_tensor_tabular["X"]), dtype=float)
+
+    save_shard(input_tensor_evenet, outdir, shard_id, folder_name, method="evenet")
+    save_shard(input_tensor_tabular, outdir, shard_id, folder_name, method="xgb")
 
     with open(outdir / "cutflow.json", "w") as f:
         json.dump(cutflow_total, f, indent=2)
@@ -405,7 +511,8 @@ def process_grid_folder(
     for key, files in processes.items():
         if len(key) == 3:
             proc, m1, m2 = key
-            outdir = output_root / f"{proc}_m35-{m1}_m45-{m2}"
+            # outdir = output_root / f"{proc}_m35-{m1}_m45-{m2}"
+            outdir = output_root / f"MX-{m1}_MY-{m2}"
         else:
             proc = key[0]
             # outdir = output_root / grid_dir.name / proc
@@ -443,7 +550,60 @@ def run_all_grids(
 
 
 if __name__ == '__main__':
-    in_dir = "/Users/avencastmini/PycharmProjects/EveNet-Lite/workspace/new_grid/"
-    out_dir = "/Users/avencastmini/PycharmProjects/EveNet-Lite/workspace/new_grid.output"
+    import argparse
 
-    run_all_grids(in_dir, out_dir, folder_structure="test_*", chunk_size="100 MB", n_workers=8)
+
+    def parse_args():
+        parser = argparse.ArgumentParser(
+            description="Run EveNet-Lite grid processing."
+        )
+
+        parser.add_argument(
+            "--in-dir",
+            required=True,
+            type=Path,
+            help="Input directory containing grid folders",
+        )
+
+        parser.add_argument(
+            "--out-dir",
+            required=True,
+            type=Path,
+            help="Output directory",
+        )
+
+        parser.add_argument(
+            "--folder-structure",
+            default="grid_*/results",
+            help="Glob pattern for grid subfolders",
+        )
+
+        parser.add_argument(
+            "--chunk-size",
+            default="100 MB",
+            help="Chunk size (e.g. '100 MB', '1 GB')",
+        )
+
+        parser.add_argument(
+            "--n-workers",
+            type=int,
+            default=8,
+            help="Number of worker processes",
+        )
+
+        return parser.parse_args()
+
+    args = parse_args()
+
+    run_all_grids(
+        input_root=args.in_dir,
+        output_root=args.out_dir,
+        folder_structure=args.folder_structure,
+        chunk_size=args.chunk_size,
+        n_workers=args.n_workers,
+    )
+
+    # in_dir = "/Users/avencastmini/PycharmProjects/EveNet-Lite/workspace/new_grid/"
+    # out_dir = "/Users/avencastmini/PycharmProjects/EveNet-Lite/workspace/new_grid.output"
+    #
+    # run_all_grids(in_dir, out_dir, folder_structure="test_*/results", chunk_size="100 MB", n_workers=8)
