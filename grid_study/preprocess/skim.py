@@ -50,31 +50,48 @@ def parse_filename(path) -> Dict[str, object]:
     raise ValueError(f"Unrecognized filename: {p}")
 
 
-def vec(arr, pre, *, m=0.0, mom_names=("PT", "Eta", "Phi"), pdg=None, q=None, extra=()):
+def vec(
+        arr, pre, *, m=0.0, mom_names=("PT", "Eta", "Phi"), pdg=None, q=None, extra=(),
+        pt_cut=None, eta_cut=None,
+):
     pt, eta, phi = (arr[f"{pre}.{k}"] for k in mom_names)
     mass = arr[f"{pre}.Mass"] if f"{pre}.Mass" in arr.fields else ak.full_like(pt, m)
+    # -----------------------------
+    # object-level selection
+    # -----------------------------
+    mask = ak.ones_like(pt, dtype=bool)
+    if pt_cut is not None:
+        mask = mask & (pt > pt_cut)
+    if eta_cut is not None:
+        mask = mask & (abs(eta) < eta_cut)
 
+    pt   = pt[mask]
+    eta  = eta[mask]
+    phi  = phi[mask]
+    mass = mass[mask]
     data = dict(pt=pt, eta=eta, phi=phi, mass=mass)
 
     if q is not None:
         data["charge"] = ak.full_like(pt, q)
     elif f"{pre}.Charge" in arr.fields:
-        data["charge"] = arr[f"{pre}.Charge"]
+        data["charge"] = arr[f"{pre}.Charge"][mask]
 
     if f"{pre}.PDG" in arr.fields or pdg is not None:
-        data["pdg"] = arr[f"{pre}.PDG"] if f"{pre}.PDG" in arr.fields else ak.full_like(pt, pdg)
+        data["pdg"] = arr[f"{pre}.PDG"][mask] if f"{pre}.PDG" in arr.fields else ak.full_like(pt, pdg)
 
     if pre == "Electron":
-        data["pdg"] = arr[f"{pre}.Charge"] * (-11)
+        data["pdg"] = arr[f"{pre}.Charge"][mask] * (-11)
     if pre == "Muon":
-        data["pdg"] = arr[f"{pre}.Charge"] * (-13)
+        data["pdg"] = arr[f"{pre}.Charge"][mask] * (-13)
 
     for k in extra:
         key = f"{pre}.{k}"
         if key in arr.fields:
-            data[k] = arr[key]
+            data[k] = arr[key][mask]
 
-    return ak.zip(data, with_name="Momentum4D")
+    vecs = ak.zip(data, with_name="Momentum4D")
+
+    return vecs
 
 
 def build_objects(arr):
@@ -82,12 +99,17 @@ def build_objects(arr):
     ELE_MASS = 0.000510998  # GeV
     MU_MASS = 0.105658375  # GeV
 
-    jets = vec(arr, "Jet", q=0, pdg=0, extra=("BTag", "TauTag", "NCharged", "NNeutrals"))
-    els = vec(arr, "Electron", extra=("D0", "DZ", "ErrorD0", "ErrorDZ"), m=ELE_MASS)
-    mus = vec(arr, "Muon", extra=("D0", "DZ", "ErrorD0", "ErrorDZ"), m=MU_MASS)
+    jet_cut = dict(pt_cut=20, eta_cut=2.4)
+    lep_cut = dict(pt_cut=25, eta_cut=2.4)
+    tau_cut = dict(pt_cut=30, eta_cut=2.4)
+
+    jets = vec(arr, "Jet", q=0, pdg=0, extra=("BTag", "TauTag", "NCharged", "NNeutrals"), **jet_cut)
+    els = vec(arr, "Electron", extra=("D0", "DZ", "ErrorD0", "ErrorDZ"), m=ELE_MASS, **lep_cut)
+    mus = vec(arr, "Muon", extra=("D0", "DZ", "ErrorD0", "ErrorDZ"), m=MU_MASS, **lep_cut)
     met = vec(arr, "MissingET", mom_names=("MET", "Eta", "Phi"), m=0.0, q=0, pdg=0)
 
-    taus = vec(arr, "Jet", pdg=0, extra=("BTag", "TauTag", "NCharged", "NNeutrals"))[jets.TauTag == 1]
+    taus = vec(arr, "Jet", pdg=0, extra=("BTag", "TauTag", "NCharged", "NNeutrals"), **tau_cut)
+    taus = taus[taus.TauTag == 1]
     taus = ak.with_field(taus, ak.full_like(taus.pt, TAU_MASS), "mass")
     taus = ak.with_field(taus, ak.full_like(taus.pt, 15) * taus.charge, "pdg")
 
@@ -220,7 +242,6 @@ def build_event_tensor(objs):
 
 
 def save_shard(event_tensor, outdir, shard_id, folder_name):
-
     n = len(next(iter(event_tensor.values())))
     splits = {
         "train": np.arange(n)[::2],
