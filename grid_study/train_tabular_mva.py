@@ -14,7 +14,7 @@ import time
 import xgboost as xgb
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score
-
+from shared_metrics import plot_score_overlay
 # --- Optional Imports ---
 try:
     from tabpfn import TabPFNClassifier
@@ -110,7 +110,7 @@ class ConfigLoader:
                 path=target,
                 is_signal=False,
                 xsec=cfg.get('xsec', 1.0),
-                nevents=cfg.get('nEvents', 1.0),
+                nevents=cfg.get('nEvent', 1.0),
                 category=cfg.get("name", "background")
             ))
 
@@ -129,7 +129,7 @@ class ConfigLoader:
                     path=folder,
                     is_signal=True,
                     xsec=1.0,  # Signal often normalized differently, usually 1.0 relative
-                    nevents=1.0,  # or read from a dict if you have specific signal xsecs
+                    nevents=184000,  #TODO: make configurable, now hardcoded
                     mx=mx,
                     my=my,
                     category="signal"
@@ -264,77 +264,6 @@ class DatasetManager:
         idx = np.random.choice(len(X), limit, replace=False, p=prob)
         return X[idx], y[idx], w[idx]
 
-
-def plot_score_overlay(x_eval, y_eval, y_pred, w_eval, p_eval, fname=None):
-    """
-    Plots the score (y_pred):
-    - Backgrounds: Stacked filled histogram broken down by process (p_eval).
-    - Signal: Separate, unfilled line (step) histogram overlaid on top.
-    """
-
-    # Masks
-    mask_signal = (y_eval == 1)
-    mask_bkg = (y_eval == 0)
-
-    # --- 1. Prepare Background Data (Stacked) ---
-    bkg_processes = np.unique(p_eval[mask_bkg])
-
-    bkg_data = []
-    bkg_weights = []
-    bkg_labels = []
-
-    # Sort processes if needed (optional), or just iterate
-    for proc in bkg_processes:
-        mask_proc = (p_eval == proc) & mask_bkg
-        if np.sum(mask_proc) > 0:
-            bkg_data.append(y_pred[mask_proc])
-            bkg_weights.append(w_eval[mask_proc])
-            bkg_labels.append(proc)
-
-    plt.figure(figsize=(10, 7))
-
-    # Common binning to ensure alignment
-    bins = np.linspace(0, 1, 40)
-
-    # Plot Stacked Background
-    if bkg_data:
-        plt.hist(bkg_data,
-                bins=bins,
-                weights=bkg_weights,
-                stacked=True,
-                label=bkg_labels,
-                alpha=0.7,
-                edgecolor='white', # Adds a small separator between stacks
-                linewidth=0.3,
-                density=True,
-                log=True
-        )
-
-    # --- 2. Plot Signal (Line Overlay) ---
-    # histtype='step' creates the line plot
-    if np.sum(mask_signal) > 0:
-        plt.hist(
-            y_pred[mask_signal],
-            bins=bins,
-            weights=w_eval[mask_signal],
-            histtype='step',
-            linewidth=2.5,
-            color='red', # Standard signal color
-            label='Signal',
-            density=True,
-            log=True
-        )
-
-    plt.xlabel('Score ($y_{pred}$)')
-    plt.ylabel('Weighted Events')
-    plt.title('Score Distribution')
-    plt.legend(loc='upper center', bbox_to_anchor=(0.5, 0.98), ncol=3)
-    plt.grid(axis='y', linestyle='--', alpha=0.3)
-
-    if fname:
-        plt.savefig(fname)
-    return plt
-    # plt.show()
 # ==========================================
 # 3. Plotting Helpers
 # ==========================================
@@ -436,154 +365,208 @@ def run_pipeline(args):
 
     # 3. Load Training Data
     dm = DatasetManager(cfg, parameterize=args.parameterize, features=args.features)
-
-    logger.info(">>> Loading Signal (Train)...")
-    d_sig_tr = dm.load_data(sig_datasets, "train", lumi=args.lumi)
-    d_sig_tr = dm.reweight_signals(d_sig_tr)  # Equalize mass points
-
-    logger.info(">>> Loading Background (Train)...")
-    d_bkg_tr = dm.load_data(bkg_datasets, "train", target_masses=target_masses, lumi=args.lumi)
-
-    # Global Balance: Sum(Bkg Weights) = Sum(Sig Weights)
-    # ---- global balance: scale background to match total signal weight ----
-    sig_sum = d_sig_tr["w"].sum()
-    bkg_sum = d_bkg_tr["w"].sum()
-
-    if bkg_sum > 0:
-        num_bkg = d_bkg_tr["w"].shape[0]
-        d_bkg_tr["w"] = d_bkg_tr["w"] * (num_bkg / bkg_sum)
-        d_sig_tr["w"] = d_sig_tr["w"] * (num_bkg / sig_sum)
-    #
-    # scale = np.sum(d_sig_tr['w']) / np.sum(d_bkg_tr['w'])
-    # d_bkg_tr['w'] *= scale
-
-    # Merge
-    X_full = np.concatenate([d_bkg_tr['X'], d_sig_tr['X']])
-    y_full = np.concatenate([d_bkg_tr['y'], d_sig_tr['y']])
-    w_full = np.concatenate([d_bkg_tr['w'], d_sig_tr['w']])
-
-    if args.parameterize:
-        m_full = np.concatenate([d_bkg_tr['m'], d_sig_tr['m']])
-        X_full = np.hstack([X_full, m_full])
-
-    # 4. Training
-    X_tr, X_val, y_tr, y_val, w_tr, w_val = train_test_split(
-        X_full, y_full, w_full, test_size=0.2, stratify=y_full, random_state=42
-    )
-
     model = None
-    start_time = time.time()
+    if "train" in args.stage:
+        logger.info(">>> Loading Signal (Train)...")
+        d_sig_tr = dm.load_data(sig_datasets, "train", lumi=args.lumi)
+        d_sig_tr = dm.reweight_signals(d_sig_tr)  # Equalize mass points
 
-    w_tr = abs(w_tr)  # Use absolute weights for training
+        logger.info(">>> Loading Background (Train)...")
+        d_bkg_tr = dm.load_data(bkg_datasets, "train", target_masses=target_masses, lumi=args.lumi)
 
-    # positive_weight_mask = w_tr > 0
-    #
-    # X_tr = X_tr[positive_weight_mask]
-    # y_tr = y_tr[positive_weight_mask]
-    # w_tr = w_tr[positive_weight_mask]
+        # Global Balance: Sum(Bkg Weights) = Sum(Sig Weights)
+        # ---- global balance: scale background to match total signal weight ----
+        sig_sum = d_sig_tr["w"].sum()
+        bkg_sum = d_bkg_tr["w"].sum()
 
-    if args.model == 'xgb':
-        logger.info("Training XGBoost...")
-        model = xgb.XGBClassifier(
-            n_estimators=1000, learning_rate=0.05, max_depth=6,
-            early_stopping_rounds=50,
-            device= 'cuda' if os.environ.get('CUDA_VISIBLE_DEVICES') else 'cpu'
-        )
-        model.fit(
-            X_tr, y_tr, sample_weight=w_tr,
-            eval_set=[(X_val, y_val)], sample_weight_eval_set=[w_val],
-            verbose=100
-        )
-        model.save_model(out_dir / "model.json")
+        if bkg_sum > 0:
+            num_bkg = d_bkg_tr["w"].shape[0]
+            d_bkg_tr["w"] = d_bkg_tr["w"] * (num_bkg / bkg_sum)
+            d_sig_tr["w"] = d_sig_tr["w"] * (num_bkg / sig_sum)
+        #
+        # scale = np.sum(d_sig_tr['w']) / np.sum(d_bkg_tr['w'])
+        # d_bkg_tr['w'] *= scale
 
-    elif args.model == 'tabpfn':
-        if not HAS_TABPFN:
-            logger.error("TabPFN requested but not installed.")
-            sys.exit(1)
-        logger.info("Training TabPFN...")
-        X_sub, y_sub, _ = dm.downsample_for_tabpfn(X_tr, y_tr, w_tr, limit=args.tabpfn_limit)
-        model = TabPFNClassifier(n_estimators=1,balance_probabilities=True) #'cuda' if os.environ.get('CUDA_VISIBLE_DEVICES') else 'cpu')
-        print("cuda:", os.environ.get('CUDA_VISIBLE_DEVICES'))
-        model.fit(X_sub, y_sub)
+        # Merge
+        X_full = np.concatenate([d_bkg_tr['X'], d_sig_tr['X']])
+        y_full = np.concatenate([d_bkg_tr['y'], d_sig_tr['y']])
+        w_full = np.concatenate([d_bkg_tr['w'], d_sig_tr['w']])
 
-    finish_time = time.time()
-    fitting_time = finish_time - start_time
-
-    # =========================================================
-    # [INSERT 1] Plot Overtraining Check (Right after training)
-    # =========================================================
-    plot_overtraining(model, X_tr, y_tr, w_tr, X_val, y_val, w_val, out_dir)
-
-    # 5. Inference (Evaluation)
-    logger.info(">>> Loading Test Data...")
-    d_sig_te = dm.load_data(sig_datasets, "valid", lumi=args.lumi)
-    d_bkg_te = dm.load_data(bkg_datasets, "valid", lumi=args.lumi)
-    d_sig_te = dm.reweight_signals(d_sig_te)
-
-    # Prepare for parametrized inference loop
-    unique_masses = np.unique(d_sig_te['m'], axis=0)
-    results = {}
-
-    for mx, my in unique_masses:
-        # A. Get Signal Subset
-        mask_s = (d_sig_te['m'][:, 0] == mx) & (d_sig_te['m'][:, 1] == my)
-        X_s = d_sig_te['X'][mask_s]
-
-        # B. Get Background (Parameterize Injection)
-        X_b = d_bkg_te['X'].copy()
+        w_full = abs(w_full)
 
         if args.parameterize:
-            # Overwrite Bkg mass to current signal hypothesis
-            m_b_inj = np.column_stack([np.full(len(X_b), mx), np.full(len(X_b), my)])
-            m_s_act = np.column_stack([np.full(len(X_s), mx), np.full(len(X_s), my)])
-            X_eval = np.concatenate([
-                np.hstack([X_b, m_b_inj]),
-                np.hstack([X_s, m_s_act])
-            ])
-        else:
-            X_eval = np.concatenate([X_b, X_s])
+            m_full = np.concatenate([d_bkg_tr['m'], d_sig_tr['m']])
+            X_full = np.hstack([X_full, m_full])
 
-        y_eval = np.concatenate([d_bkg_te['y'], d_sig_te['y'][mask_s]])
-        w_eval = np.concatenate([d_bkg_te['w'], d_sig_te['w'][mask_s]])
-        p_eval = np.concatenate([d_bkg_te['proc'], d_sig_te['proc'][mask_s]])
-
-        # C. Predict
-        if args.model == 'tabpfn' and len(X_eval) > 50000:
-            # Batch prediction
-            batch = 50000
-            preds = []
-            for i in range(0, len(X_eval), batch):
-                preds.append(model.predict_proba(X_eval[i:i + batch])[:, 1])
-            y_pred = np.concatenate(preds)
-        else:
-            y_pred = model.predict_proba(X_eval)[:, 1]
-
-        # D. Metrics
-        metrics = calculate_physics_metrics(
-            y_pred, y_eval, w_eval,
-            False ,min_bkg_events=10,
-            log_plots=True,
-            f_name=f"{out_dir}/sic_MX-{int(mx)}_MY-{int(my)}.png"
+        # 4. Training
+        X_tr, X_val, y_tr, y_val, w_tr, w_val = train_test_split(
+            X_full, y_full, w_full, test_size=0.2, stratify=y_full, random_state=42
         )
-        key = f"MX-{int(mx)}_MY-{int(my)}"
-        results = {
-            "auc": float(metrics['auc']),
-            "max_sic": float(metrics['max_sic']),
-            "max_sic_unc": float(metrics['max_sic_unc']),
-            "fitting_time": fitting_time
-        }
-        logger.info(f"Mass {key}: AUC={metrics['auc']:.4f}, Max SIC={metrics['max_sic']:.4f}")
 
-        plot_score_overlay(
-            x_eval=X_eval,
-            y_eval=y_eval,
-            w_eval=w_eval,
-            p_eval=p_eval,
-            y_pred=y_pred,
-            fname = out_dir / f"score_MX-{int(mx)}_MY-{int(my)}.png"
-        )
-        with open(out_dir / f"metrics_MX-{int(mx)}_MY-{int(my)}.json", "w") as f:
-            json.dump(results, f, indent=4)
+        start_time = time.time()
+
+        # positive_weight_mask = w_tr > 0
+        #
+        # X_tr = X_tr[positive_weight_mask]
+        # y_tr = y_tr[positive_weight_mask]
+        # w_tr = w_tr[positive_weight_mask]
+
+        if args.model == 'xgb':
+            logger.info("Training XGBoost...")
+            model = xgb.XGBClassifier(
+                n_estimators=1000, learning_rate=0.05, max_depth=6,
+                early_stopping_rounds=50,
+                device= 'cuda' if os.environ.get('CUDA_VISIBLE_DEVICES') else 'cpu'
+            )
+            model.fit(
+                X_tr, y_tr, sample_weight=w_tr,
+                eval_set=[(X_val, y_val)], sample_weight_eval_set=[w_val],
+                verbose=100
+            )
+            model.save_model(out_dir / "model.json")
+
+        elif args.model == 'tabpfn':
+            if not HAS_TABPFN:
+                logger.error("TabPFN requested but not installed.")
+                sys.exit(1)
+            logger.info("Training TabPFN...")
+            X_sub, y_sub, _ = dm.downsample_for_tabpfn(X_tr, y_tr, w_tr, limit=args.tabpfn_limit)
+            model = TabPFNClassifier(n_estimators=1,balance_probabilities=True) #'cuda' if os.environ.get('CUDA_VISIBLE_DEVICES') else 'cpu')
+            print("cuda:", os.environ.get('CUDA_VISIBLE_DEVICES'))
+            model.fit(X_sub, y_sub)
+
+        finish_time = time.time()
+        fitting_time = finish_time - start_time
+
+        # =========================================================
+        # [INSERT 1] Plot Overtraining Check (Right after training)
+        # =========================================================
+        plot_overtraining(model, X_tr, y_tr, w_tr, X_val, y_val, w_val, out_dir)
+
+    if "predict" in args.stage:
+        # 5. Inference (Evaluation)
+        if model is None:
+            logger.info(">>> Loading Trained Model...")
+            if args.model == 'xgb':
+                model = xgb.XGBClassifier()
+                model.load_model(out_dir / "model.json")
+            elif args.model == 'tabpfn':
+                if not HAS_TABPFN:
+                    logger.error("TabPFN requested but not installed.")
+                    sys.exit(1)
+                model = TabPFNClassifier(n_estimators=1,balance_probabilities=True) # TODO add evaluation check point
+        logger.info(">>> Loading Test Data...")
+        d_sig_te = dm.load_data(sig_datasets, "valid", lumi=args.lumi)
+        d_bkg_te = dm.load_data(bkg_datasets, "valid", lumi=args.lumi)
+        d_sig_te = dm.reweight_signals(d_sig_te)
+
+        # Prepare for parametrized inference loop
+        unique_masses = np.unique(d_sig_te['m'], axis=0)
+
+        for mx, my in unique_masses:
+            # A. Get Signal Subset
+            if args.mX is not None and (int(mx) != int(args.mX)):
+                continue
+            if args.mY is not None and (int(my) != int(args.mY)):
+                continue
+            mask_s = (d_sig_te['m'][:, 0] == mx) & (d_sig_te['m'][:, 1] == my)
+            X_s = d_sig_te['X'][mask_s]
+            # B. Get Background (Parameterize Injection)
+            X_b = d_bkg_te['X'].copy()
+            if args.parameterize:
+                # Overwrite Bkg mass to current signal hypothesis
+                m_b_inj = np.column_stack([np.full(len(X_b), mx), np.full(len(X_b), my)])
+                m_s_act = np.column_stack([np.full(len(X_s), mx), np.full(len(X_s), my)])
+                X_eval = np.concatenate([
+                    np.hstack([X_b, m_b_inj]),
+                    np.hstack([X_s, m_s_act])
+                ])
+            else:
+                X_eval = np.concatenate([X_b, X_s])
+
+            y_eval = np.concatenate([d_bkg_te['y'], d_sig_te['y'][mask_s]])
+            w_eval = np.concatenate([d_bkg_te['w'], d_sig_te['w'][mask_s]])
+            p_eval = np.concatenate([d_bkg_te['proc'], d_sig_te['proc'][mask_s]])
+
+            # C. Predict
+            if args.model == 'tabpfn' and len(X_eval) > 50000:
+                # Batch prediction
+                batch = 50000
+                preds = []
+                for i in range(0, len(X_eval), batch):
+                    preds.append(model.predict_proba(X_eval[i:i + batch])[:, 1])
+                y_pred = np.concatenate(preds)
+            else:
+                y_pred = model.predict_proba(X_eval)[:, 1]
+
+
+            predict_value = {
+                "y_true": y_eval.tolist(),
+                "y_pred": y_pred.tolist(),
+                "w": w_eval.tolist(),
+                "proc": p_eval.tolist(),
+                "mx": mx,
+                "my": my,
+            }
+
+            with open(out_dir / f"predictions_MX-{int(round(mx))}_MY-{int(round(my))}.json", "w") as f:
+                json.dump(predict_value, f, indent=4)
+
+    if "evaluate" in args.stage:
+        logger.info(">>> Evaluating Predictions...")
+        # Load predictions
+        all_masses = [(d_sig.mx, d_sig.my) for d_sig in sig_datasets]
+        for mx, my in all_masses:
+            if args.mX is not None and (int(mx) != int(args.mX)):
+                continue
+            if args.mY is not None and (int(my) != int(args.mY)):
+                continue
+
+            pred_file = out_dir / f"predictions_MX-{int(mx)}_MY-{int(my)}.json"
+            if not pred_file.exists():
+                logger.warning(f"Prediction file not found: {pred_file}")
+                continue
+
+            with open(pred_file) as f:
+                pred_data = json.load(f)
+
+            y_eval = np.array(pred_data['y_true'])
+            y_pred = np.array(pred_data['y_pred'])
+            w_eval = np.array(pred_data['w'])
+            p_eval = np.array(pred_data['proc'])
+
+            # D. Metrics
+            metrics = calculate_physics_metrics(
+                y_pred, y_eval, w_eval, training=False,
+                min_bkg_events=10,
+                log_plots=True,
+                bins=1000,
+                min_bkg_ratio=0.0001,
+                f_name=f"{out_dir}/sic_MX-{int(mx)}_MY-{int(my)}.png",
+                Zs=10,
+                Zb=5,
+                min_bkg_per_bin=3,
+                min_mc_stats=1.0,
+            )
+
+            key = f"MX-{int(mx)}_MY-{int(my)}"
+            results = {
+                "auc": float(metrics['auc']),
+                "max_sic": float(metrics['max_sic']),
+                "max_sic_unc": float(metrics['max_sic_unc']),
+                # "fitting_time": fitting_time
+            }
+            logger.info(f"Mass {key}: AUC={metrics['auc']:.4f}, Max SIC={metrics['max_sic']:.4f}")
+
+            plot_score_overlay(
+                y_eval=y_eval,
+                w_eval=w_eval,
+                p_eval=p_eval,
+                y_pred=y_pred,
+                fname = out_dir / f"score_MX-{int(mx)}_MY-{int(my)}.png"
+            )
+            with open(out_dir / f"eval_metrics_MX-{int(mx)}_MY-{int(my)}.json", "w") as f:
+                json.dump(results, f, indent=4)
     logger.info(f"Done. Results saved to {out_dir}")
 
 
@@ -610,6 +593,7 @@ if __name__ == "__main__":
 
     # IO
     parser.add_argument("--out_dir", type=str, default="results")
+    parser.add_argument("--stage", type=str, default=["train", "predict", "evaluate"], nargs="+", help="Pipeline stages to run")
 
     args = parser.parse_args()
 

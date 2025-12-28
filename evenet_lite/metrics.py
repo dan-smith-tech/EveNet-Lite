@@ -1,3 +1,4 @@
+import logging
 import math
 from typing import Dict, Optional, Tuple
 
@@ -6,7 +7,8 @@ import torch
 import torch.nn.functional as F
 
 from scipy.special import expit, softmax
-from sklearn.metrics import roc_auc_score
+
+from .transform_binning import binned_sig
 
 
 def _flatten_ensemble(
@@ -44,11 +46,11 @@ def _mean_ensemble_logits(logits: torch.Tensor) -> torch.Tensor:
 #     return per_sample.mean()
 
 def compute_loss(
-    logits: torch.Tensor,
-    targets: torch.Tensor,
-    weights: Optional[torch.Tensor],
-    gamma: float = 1.0,
-    eps: float = 1e-8,
+        logits: torch.Tensor,
+        targets: torch.Tensor,
+        weights: Optional[torch.Tensor],
+        gamma: float = 1.0,
+        eps: float = 1e-8,
 ) -> torch.Tensor:
     logits, targets, weights = _flatten_ensemble(logits, targets, weights)
 
@@ -150,6 +152,7 @@ def compute_sic_from_scores(
         weights: np.ndarray,
         edges: np.ndarray,
         min_bkg_events: int = 10,
+        min_bkg_ratio: Optional[float] = None,
 ) -> Dict[str, np.ndarray]:
     """Compute SIC curve and related quantities on weighted scores.
 
@@ -227,7 +230,8 @@ def compute_sic_from_scores(
     bkg_yield = cum_bkg[idxs]
 
     # Valid region
-    valid = (bkg_eff > 0) & (bkg_yield >= min_bkg_events)
+    min_bkg_eff = 0.0 if min_bkg_ratio is None else min_bkg_ratio
+    valid = (bkg_eff > min_bkg_eff) & (bkg_yield >= min_bkg_events)
 
     # Full curves (without the minimum-background cut) for plotting
     bkg_rej_full = np.full_like(sig_eff, np.nan, dtype=float)
@@ -426,12 +430,11 @@ def plot_sic_diagnostics(
                 label=f"bkg = {min_bkg_events:g}",
             )
 
-        for ax in [axs[0,0], axs[0,1], axs[1,0]]:
+        for ax in [axs[0, 0], axs[0, 1], axs[1, 0]]:
             ax.axvline(min_bkg_line_x, color="gray", linestyle="--", alpha=0.75, lw=2, label=f"bkg={min_bkg_events:5d}")
         axs[0, 0].legend(loc="lower right")
         axs[0, 1].legend(loc="upper right")
         axs[1, 0].legend(loc="upper right")
-
 
     for ax in axs.flat:
         ax.grid(True, alpha=0.3)
@@ -452,6 +455,15 @@ def calculate_physics_metrics(
         wandb_run: Optional[object] = None,
         log_step: Optional[int] = None,
         f_name: Optional[str] = None,
+        min_bkg_ratio: Optional[float] = None,
+        Zs: int = 10,
+        Zb: int = 5,
+        min_bkg_per_bin: int = 3,
+        min_mc_stats: float = 1.0,
+        include_signal_in_stat: bool = True,
+        edges_low=None,
+        edges_high=None,
+        logger: logging.Logger | None = None,
 ) -> Dict[str, np.ndarray]:
     """Calculates AUC and Max SIC with statistical uncertainty."""
 
@@ -467,7 +479,7 @@ def calculate_physics_metrics(
     edges = np.linspace(0, 1, bins + 1)
 
     sic_result = compute_sic_from_scores(
-        targets, scores, weights, edges, min_bkg_events=min_bkg_events
+        targets, scores, weights, edges, min_bkg_events=min_bkg_events, min_bkg_ratio=min_bkg_ratio
     )
 
     try:
@@ -476,13 +488,29 @@ def calculate_physics_metrics(
     except ValueError:
         auc_val = 0.5
 
+    trafo_edge, bin_sig = binned_sig(
+        test_data=scores,
+        test_label=targets,
+        test_weights=weights,
+        Zb=Zb,
+        Zs=Zs,
+        min_bkg_per_bin=min_bkg_per_bin,
+        min_mc_stats=min_mc_stats,
+        include_signal=include_signal_in_stat,
+        edges_low=edges_low,
+        edges_high=edges_high,
+        logger=logger,
+    )
+
     metrics = {
         "auc": float(auc_val),
         "max_sic": float(sic_result["max_sic"]),
         "max_sic_unc": float(sic_result["max_sic_unc"]),
+        "trafo_bin_sig": float(bin_sig),
         "sic": sic_result["sic"],
         "sic_unc": sic_result["sic_unc"],
         "edges": edges,
+        "trafo_edge": trafo_edge,
     }
 
     if log_plots:

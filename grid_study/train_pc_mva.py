@@ -16,7 +16,7 @@ import torch
 import torch.distributed as dist
 
 try:
-    from evenet_lite import run_evenet_lite_training
+    from evenet_lite import run_evenet_lite_training, EvenetLiteClassifier
     from evenet_lite.callbacks import ParameterRandomizationCallback
 
     HAS_EVENET = True
@@ -51,6 +51,7 @@ except ImportError:
             'max_sic_unc': 0.0, 'max_sic': 0.0,
             'auc': roc_auc_score(targets, probs, sample_weight=weights)
         }
+from shared_metrics import plot_score_overlay
 
 
 # ==========================================
@@ -157,7 +158,7 @@ class ConfigLoader:
                 path=target,
                 is_signal=False,
                 xsec=cfg.get('xsec', 1.0),
-                nevents=cfg.get('nEvents', 1.0),
+                nevents=cfg.get('nEvent', 1.0),
                 category=cfg.get("name", "background")
             ))
 
@@ -170,7 +171,7 @@ class ConfigLoader:
                     path=folder,
                     is_signal=True,
                     xsec=1.0,
-                    nevents=1.0,
+                    nevents=184000,  # TODO: make configurable, now hardcoded
                     mx=mx,
                     my=my,
                     category="signal"
@@ -352,57 +353,6 @@ class EveNetDatasetManager:
 
 
 # ==========================================
-# 3. Plotting Helpers (accept torch or numpy; convert internally)
-# ==========================================
-
-def plot_score_overlay(y_eval, y_pred, w_eval, p_eval, fname=None):
-    # Convert tensors to numpy for matplotlib
-    if isinstance(y_eval, torch.Tensor): y_eval = y_eval.detach().cpu().numpy()
-    if isinstance(y_pred, torch.Tensor): y_pred = y_pred.detach().cpu().numpy()
-    if isinstance(w_eval, torch.Tensor): w_eval = w_eval.detach().cpu().numpy()
-
-    mask_signal = (y_eval == 1)
-    mask_bkg = (y_eval == 0)
-
-    bkg_processes = np.unique(p_eval[mask_bkg])
-    bkg_data, bkg_weights, bkg_labels = [], [], []
-
-    for proc in bkg_processes:
-        mask_proc = (p_eval == proc) & mask_bkg
-        if np.sum(mask_proc) > 0:
-            bkg_data.append(y_pred[mask_proc])
-            bkg_weights.append(w_eval[mask_proc])
-            bkg_labels.append(proc)
-
-    plt.figure(figsize=(10, 7))
-    bins = np.linspace(0, 1, 40)
-
-    if bkg_data:
-        plt.hist(
-            bkg_data, bins=bins, weights=bkg_weights, stacked=True,
-            label=bkg_labels, alpha=0.7, edgecolor="white", linewidth=0.3,
-            density=True, log=True
-        )
-
-    if np.sum(mask_signal) > 0:
-        plt.hist(
-            y_pred[mask_signal], bins=bins, weights=w_eval[mask_signal],
-            histtype="step", linewidth=2.5, color="red", label="Signal",
-            density=True, log=True
-        )
-
-    plt.xlabel("Score ($y_{pred}$)")
-    plt.ylabel("Weighted Events")
-    plt.title("Score Distribution (EveNet)")
-    plt.legend(loc="upper center", bbox_to_anchor=(0.5, 0.98), ncol=3)
-    plt.grid(axis="y", linestyle="--", alpha=0.3)
-
-    if fname:
-        plt.savefig(fname)
-        plt.close()
-
-
-# ==========================================
 # 4. Execution Flow
 # ==========================================
 
@@ -430,13 +380,21 @@ def run_pipeline(args):
     if not HAS_EVENET:
         return
 
-    mode_str = "parametrized" if args.parameterize else "individual"
+    if args.parameterize:
+        mode_str = f"parametrized_reduce_factor_x_{args.param_mx_step}_y_{args.param_my_step}"
+    else:
+        mode_str = "individual"
     mass_target = "All" if args.parameterize else f"MX-{args.mX}_MY-{args.mY}"
     model_str = "evenet-pretrain" if args.pretrain else "evenet-scratch"
     out_dir = Path(args.out_dir) / model_str / mode_str / mass_target
     out_dir.mkdir(parents=True, exist_ok=True)
     ckpt_dir = out_dir / "checkpoints"
     ckpt_dir.mkdir(exist_ok=True)
+
+    if args.in_dir is not None:
+        load_dir = Path(args.in_dir) / model_str / mode_str / mass_target
+    else:
+        load_dir = out_dir
 
     # ---- config & discovery ----
     cfg = ConfigLoader(args.yaml_path, args.base_dir)
@@ -475,6 +433,7 @@ def run_pipeline(args):
     # ---- load training data ----
     dm = EveNetDatasetManager(cfg, parameterize=args.parameterize)
 
+    classifier = None
     logger.info(">>> Loading Signal (Train)...")
     d_sig_tr = dm.load_data(sig_datasets_train, "train", lumi=args.lumi)
     d_sig_tr = dm.reweight_signals(d_sig_tr, logger=logger)
@@ -517,209 +476,308 @@ def run_pipeline(args):
     global_dim = train_features["globals"].shape[1]
     if args.parameterize:
         global_dim += train_features["params"].shape[1]
-    print("global_dim", global_dim)
-
-    # ---- callbacks ----
-    callbacks = []
-    if args.parameterize:
-        m_vals = d_train["m"]
-        min_vals = m_vals.min(dim=0).values.tolist()
-        max_vals = m_vals.max(dim=0).values.tolist()
-        logger.info(f"Adding ParameterRandomizationCallback: Min={min_vals}, Max={max_vals}")
-        callbacks.append(
-            ParameterRandomizationCallback(min_values=min_vals, max_values=max_vals, pool_from_signal=True))
 
     # ---- feature names ----
     feature_names = {
-        "x": [f"feat_{i}" for i in range(train_features["x"].shape[2])],
-        "globals": [f"glob_{i}" for i in range(global_dim)],
-    }
-
-    normalize_pt = "norm/normalization_pretrain.pt"
-    normalize_dict = torch.load(normalize_pt, map_location="cpu", weights_only=False)
-    normalization_stats = {
-        "x": {
-            "mean": normalize_dict["input_mean"]["Source"],  # len == num object features
-            "std": normalize_dict["input_std"]["Source"],
-        },
-        "globals": {
-            "mean": normalize_dict["input_mean"]["Conditions"],  # len == num global features
-            "std": normalize_dict["input_std"]["Conditions"],
-        }
-    }
-
-    normalization_rules = {
-        "x": {
-            "energy": "log_normalize",
-            "pt": "log_normalize",
-            "eta": "normalize",
-            "phi": "normalize_uniform"
-        },
-        "globals": {
-            "met": "log_normalize",
-            "met_phi": "normalize",
-            "HT": "log_normalize",
-            "HT_lep": "log_normalize",
-            "M_all": "log_normalize",
-            "M_leps": "log_normalize",
-            "M_bjets": "log_normalize"
-        },
+        "x": ['energy', 'pt', 'eta', 'phi', 'isBTag', 'isLepton', 'Charge'],
+        "globals": ['met', 'met_phi', 'nLepton', 'nbJet', 'nJet', 'HT', 'HT_lep', 'M_all', 'M_leps', 'M_bjets'],
     }
     if args.parameterize:
-        normalization_stats["params"] = {
-            "mean": d_train["m"].mean(axis=1),
-            "std": d_train["m"].std(axis=1)
-        }
-        normalization_rules["params"] = {
-            "feature_0": "normalize",
-            "feature_1": "normalize"
-        }
+        feature_names["params"] = ['feature_0', 'feature_1']
 
-    learning_rate = args.learning_rate if hasattr(args, 'learning_rate') else 1e-3
-    learning_rates = [learning_rate] if not args.pretrain else [0.1 * learning_rate, 0.3 * learning_rate, learning_rate]
-    module_lists = [["Classification", "ObjectEncoder", "PET", "GlobalEmbedding"]] if not args.pretrain else [["PET"],
-                                                                                                              ["ObjectEncoder",
-                                                                                                               "GlobalEmbedding"],
-                                                                                                              ["Classification"]]
-    weight_decay = [1e-4 for x in learning_rates]
-    # ---- train ----
-    world_size = int(os.environ.get("WORLD_SIZE", "1"))
-    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
-    if world_size > 1 and torch.cuda.is_available():
-        torch.cuda.set_device(local_rank)
-    logger.info(f">>> Starting EveNet Training on GPU: {local_rank} [of World: {world_size}]")
-
-    classifier = run_evenet_lite_training(
-        train_features=train_features,
-        train_labels=d_train["y"],
-        train_weights=d_train["w"],
-
-        val_features=val_features,
-        val_labels=d_val["y"],
-        val_weights=d_val["w"],
-
-        class_labels=["background", "signal"],
-        global_input_dim=global_dim,
-        # feature_names=feature_names,
-        callbacks=callbacks,
-
-        epochs=args.epochs,
-        batch_size=args.batch_size,
-        # sampler="weighted",
-
-        checkpoint_path=str(ckpt_dir),
-        save_top_k=1,
-        monitor_metric="val_loss",
-        sic_min_bkg_events=10,
-        normalization_rules=normalization_rules if args.parameterize else None,
-        normalization_stats=normalization_stats,
-        use_wandb=True,
-        wandb={
-            'project': 'EveNet-GridSearch',
-            'name': f"{model_str}-{mode_str}-{mass_target}{'-test' if args.wandb_test else ''}",
-            'entity': "ytchou97-university-of-washington",
-            'save_dir': "/pscratch/sd/t/tihsu/tmp/wandb"
-        },
-        pretrained=args.pretrain,
-        pretrained_path="/global/cfs/cdirs/m5019/avencast/Checkpoints/checkpoints.20M.ablation.4.newcls/last.ckpt",
-        pretrained_source="local",
-        module_lists=module_lists,
-        lr=learning_rates,
-        weight_decay=weight_decay,
-        early_stop_patience=3,
-        n_ensemble=args.ensemble,
-        loss_gamma=args.gamma
-    )
-
-    # ---- evaluation data ----
-    def is_rank_zero():
-        return (not dist.is_available()) or (not dist.is_initialized()) or dist.get_rank() == 0
-
-    logger.info(">>> Loading Test Data...")
-    d_sig_te = dm.load_data(sig_datasets_eval, "valid", lumi=args.lumi)
-    d_sig_te = dm.reweight_signals(d_sig_te, logger=logger)
-    d_bkg_te = dm.load_data(bkg_datasets, "valid", lumi=args.lumi)
-
-    # Unique mass points as torch [K,2]
-    unique_masses = torch.unique(d_sig_te["m"], dim=0)
-
-    for i in range(unique_masses.shape[0]):
-        mx = unique_masses[i, 0]
-        my = unique_masses[i, 1]
-
-        # ---- signal subset by mass (torch mask) ----
-        mask_s = (d_sig_te["m"][:, 0] == mx) & (d_sig_te["m"][:, 1] == my)
-        sub_sig = filter_dict(d_sig_te, mask_s)
-
-        # ---- background copy (avoid in-place edits of the original) ----
-        sub_bkg = {}
-        for k, v in d_bkg_te.items():
-            if isinstance(v, torch.Tensor):
-                sub_bkg[k] = v.clone()
-            else:
-                sub_bkg[k] = np.asarray(v, dtype=object).copy()
-
-        # Inject parameters into background for parametrized inference
+    if "train" in args.stage:
+        # ---- callbacks ----
+        callbacks = []
         if args.parameterize:
-            N_b = sub_bkg["y"].shape[0]
-            sub_bkg["m"] = torch.stack(
-                [
-                    torch.full((N_b,), mx.item(), dtype=torch.float32),
-                    torch.full((N_b,), my.item(), dtype=torch.float32),
-                ],
-                dim=1
+            m_vals = d_train["m"]
+            min_vals = m_vals.min(dim=0).values.tolist()
+            max_vals = m_vals.max(dim=0).values.tolist()
+            logger.info(f"Adding ParameterRandomizationCallback: Min={min_vals}, Max={max_vals}")
+            callbacks.append(
+                ParameterRandomizationCallback(min_values=min_vals, max_values=max_vals, pool_from_signal=True))
+
+        ##########################
+        ## Normalization Rules  ##
+        ##########################
+
+        normalize_pt = "norm/normalization_pretrain.pt"
+        normalize_dict = torch.load(normalize_pt, map_location="cpu", weights_only=False)
+        normalization_stats = {
+            "x": {
+                "mean": normalize_dict["input_mean"]["Source"],  # len == num object features
+                "std": normalize_dict["input_std"]["Source"],
+            },
+            "globals": {
+                "mean": normalize_dict["input_mean"]["Conditions"],  # len == num global features
+                "std": normalize_dict["input_std"]["Conditions"],
+            }
+        }
+
+        normalization_rules = {
+            "x": {
+                "energy": "log_normalize",
+                "pt": "log_normalize",
+                "eta": "normalize",
+                "phi": "normalize_uniform"
+            },
+            "globals": {
+                "met": "log_normalize",
+                "met_phi": "normalize",
+                "HT": "log_normalize",
+                "HT_lep": "log_normalize",
+                "M_all": "log_normalize",
+                "M_leps": "log_normalize",
+                "M_bjets": "log_normalize"
+            },
+        }
+        if args.parameterize:
+            normalization_stats["params"] = {
+                "mean": d_train["m"].mean(axis=1),
+                "std": d_train["m"].std(axis=1)
+            }
+            normalization_rules["params"] = {
+                "feature_0": "normalize",
+                "feature_1": "normalize"
+            }
+
+        learning_rate = args.learning_rate if hasattr(args, 'learning_rate') else 1e-3
+        learning_rates = [learning_rate] if not args.pretrain else [0.1 * learning_rate, 0.3 * learning_rate,
+                                                                    learning_rate]
+        module_lists = [["Classification", "ObjectEncoder", "PET", "GlobalEmbedding"]] if not args.pretrain else [
+            ["PET"], ["ObjectEncoder", "GlobalEmbedding"], ["Classification"]]
+        weight_decay = [1e-4 for x in learning_rates]
+        # ---- train ----
+        world_size = int(os.environ.get("WORLD_SIZE", "1"))
+        local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+        if world_size > 1 and torch.cuda.is_available():
+            torch.cuda.set_device(local_rank)
+        logger.info(f">>> Starting EveNet Training on GPU: {local_rank} [of World: {world_size}]")
+
+        start_time = time.time()
+        classifier = run_evenet_lite_training(
+            train_features=train_features,
+            train_labels=d_train["y"],
+            train_weights=d_train["w"],
+
+            val_features=val_features,
+            val_labels=d_val["y"],
+            val_weights=d_val["w"],
+
+            class_labels=["background", "signal"],
+            global_input_dim=global_dim,
+            # feature_names=feature_names,
+            callbacks=callbacks,
+
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            # sampler="weighted",
+
+            checkpoint_path=str(ckpt_dir),
+            save_top_k=1,
+            monitor_metric="val_loss",
+            sic_min_bkg_events=10,
+            normalization_rules=normalization_rules if args.parameterize else None,
+            normalization_stats=normalization_stats,
+            use_wandb=True,
+            wandb={
+                'project': 'EveNet-GridSearch',
+                'name': f"{model_str}-{mode_str}-{mass_target}{'-test' if args.wandb_test else ''}",
+                'entity': "ytchou97-university-of-washington",
+                'save_dir': "/pscratch/sd/t/tihsu/tmp/wandb"
+            },
+            pretrained=args.pretrain,
+            pretrained_path="/global/cfs/cdirs/m5019/avencast/Checkpoints/checkpoints.20M.ablation.4.newcls/last.ckpt",
+            pretrained_source="local",
+            module_lists=module_lists,
+            lr=learning_rates,
+            weight_decay=weight_decay,
+            early_stop_patience=3,
+            n_ensemble=args.ensemble,
+            loss_gamma=args.gamma
+        )
+        end_time = time.time()
+
+        fitting_time = end_time - start_time
+        logger.info(f"Training completed in {fitting_time / 60:.2f} minutes.")
+
+    predict_value = None
+    if "predict" in args.stage:
+        if classifier is None:
+            classifier = EvenetLiteClassifier(
+                class_labels=["background", "signal"],
+                global_input_dim=global_dim,
+                n_ensemble=args.ensemble
+            )
+            # load lastest checkpoint from ckpt_dir
+            ckpt_files = list(ckpt_dir.glob("*.pt"))
+            if not ckpt_files:
+                logger.error(f"No checkpoints found in {ckpt_dir} for prediction!")
+                raise SystemExit(1)
+            best_ckpt = max(ckpt_files, key=os.path.getctime)
+            classifier.load_checkpoint(best_ckpt, feature_names=feature_names)
+
+        # ---- evaluation data ----
+        def is_rank_zero():
+            return (not dist.is_available()) or (not dist.is_initialized()) or dist.get_rank() == 0
+
+        logger.info(">>> Loading Test Data...")
+        d_sig_te = dm.load_data(sig_datasets_eval, "valid", lumi=args.lumi)
+        # d_sig_te = dm.reweight_signals(d_sig_te, logger=logger)
+        d_bkg_te = dm.load_data(bkg_datasets, "valid", lumi=args.lumi)
+
+        # Unique mass points as torch [K,2]
+        unique_masses = torch.unique(d_sig_te["m"], dim=0)
+
+        for i in range(unique_masses.shape[0]):
+            mx = unique_masses[i, 0]
+            my = unique_masses[i, 1]
+
+            if args.mX is not None:
+                if int(mx.item()) != int(args.mX):
+                    continue
+            if args.mY is not None:
+                if int(my.item()) != int(args.mY):
+                    continue
+
+            # ---- signal subset by mass (torch mask) ----
+            mask_s = (d_sig_te["m"][:, 0] == mx) & (d_sig_te["m"][:, 1] == my)
+            sub_sig = filter_dict(d_sig_te, mask_s)
+
+            # ---- background copy (avoid in-place edits of the original) ----
+            sub_bkg = {}
+            for k, v in d_bkg_te.items():
+                if isinstance(v, torch.Tensor):
+                    sub_bkg[k] = v.clone()
+                else:
+                    sub_bkg[k] = np.asarray(v, dtype=object).copy()
+
+            # Inject parameters into background for parametrized inference
+            if args.parameterize:
+                N_b = sub_bkg["y"].shape[0]
+                sub_bkg["m"] = torch.stack(
+                    [
+                        torch.full((N_b,), mx.item(), dtype=torch.float32),
+                        torch.full((N_b,), my.item(), dtype=torch.float32),
+                    ],
+                    dim=1
+                )
+
+            # ---- merge eval set ----
+            eval_data = concat_ds(sub_bkg, sub_sig, keys_to_merge)
+
+            # ---- features ----
+            eval_features = prepare_evenet_features(eval_data, args.parameterize)
+
+            # ---- predict ----
+            print(sub_sig["y"][:10], sub_bkg["y"][:10])
+            logits = classifier.predict(eval_features, batch_size=args.batch_size * 8)
+
+            if not is_rank_zero():
+                continue
+
+            probs = torch.softmax(logits, dim=1)
+            y_pred = probs[:, 1].detach().cpu().numpy()
+
+            # ---- metrics inputs ----
+            y_eval = eval_data["y"].detach().cpu().numpy()
+            w_eval = eval_data["w"].detach().cpu().numpy()
+            p_eval = eval_data["proc"]  # numpy/object
+
+            predict_value = {
+                "y_true": y_eval.tolist(),
+                "y_pred": y_pred.tolist(),
+                "w": w_eval.tolist(),
+                "proc": p_eval.tolist(),
+                "mx": mx.item(),
+                "my": my.item(),
+            }
+
+            with open(out_dir / f"predictions_MX-{int(round(mx.item()))}_MY-{int(round(my.item()))}.json", "w") as f:
+                json.dump(predict_value, f, indent=4)
+
+    if "evaluate" in args.stage:
+        def is_rank_zero():
+            return (not dist.is_available()) or (not dist.is_initialized()) or dist.get_rank() == 0
+
+        all_masses = [(d_sig.mx, d_sig.my) for d_sig in sig_datasets_eval]
+        for mx_val, my_val in all_masses:
+            if args.mX is not None:
+                if int(mx_val) != int(args.mX):
+                    continue
+            if args.mY is not None:
+                if int(my_val) != int(args.mY):
+                    continue
+
+            with open(load_dir / f"predictions_MX-{int(round(mx_val))}_MY-{int(round(my_val))}.json", "r") as f:
+                predict_value = json.load(f)
+
+            if not is_rank_zero():
+                continue
+
+            y_eval = np.array(predict_value["y_true"])
+            y_pred = np.array(predict_value["y_pred"])
+            w_eval = np.array(predict_value["w"])
+            p_eval = np.array(predict_value["proc"])
+
+            nevents_by_name = {ds.category: ds.nevents if ds.category != 'signal' else 1.0 for ds in all_datasets }
+            nevents_eval = np.array([nevents_by_name[p] for p in p_eval])
+            w_eval = w_eval / nevents_eval
+
+            mx = predict_value["mx"]
+            my = predict_value["my"]
+            # ---- metrics ----
+
+            metrics = calculate_physics_metrics(
+                y_pred, y_eval, w_eval, training=False,
+                min_bkg_events=10,
+                log_plots=True,
+                bins=1000,
+                min_bkg_ratio=0.0001,
+                f_name=str(out_dir / f"sic_plots_MX-{int(round(mx_val))}_MY-{int(round(my_val))}.png"),
+                Zs=10,
+                Zb=5,
+                min_bkg_per_bin=3,
+                min_mc_stats=0.2,
+                include_signal_in_stat=False,
+                # logger=logger,
             )
 
-        # ---- merge eval set ----
-        eval_data = concat_ds(sub_bkg, sub_sig, keys_to_merge)
+            key = f"MX-{int(round(mx_val))}_MY-{int(round(my_val))}"
+            logger.info(
+                f"Mass {key}: AUC={metrics['auc']:.4f}, Max SIC={metrics['max_sic']:.4f}, Bin SIG={metrics['trafo_bin_sig']:.4f}")
 
-        # ---- features ----
-        eval_features = prepare_evenet_features(eval_data, args.parameterize)
+            # ---- plots ----
+            plot_score_overlay(
+                y_eval=y_eval,
+                y_pred=y_pred,
+                w_eval=w_eval,
+                p_eval=p_eval,
+                fname=out_dir / f"score_{key}.png",
+            )
 
-        # ---- predict ----
-        print(sub_sig["y"][:10], sub_bkg["y"][:10])
-        logits = classifier.predict(eval_features, batch_size=args.batch_size * 8)
+            plot_score_overlay(
+                y_eval=y_eval,
+                y_pred=y_pred,
+                w_eval=w_eval,
+                p_eval=p_eval,
+                bins=metrics['trafo_edge'],
+                uniform_bin_plot=True,
+                fname=out_dir / f"score_trafo_{key}.png",
+            )
 
-        if not is_rank_zero():
-            continue
-
-        probs = torch.softmax(logits, dim=1)
-        y_pred = probs[:, 1].detach().cpu().numpy()
-
-        # ---- metrics inputs ----
-        y_eval = eval_data["y"].detach().cpu().numpy()
-        w_eval = eval_data["w"].detach().cpu().numpy()
-        p_eval = eval_data["proc"]  # numpy/object
-
-        metrics = calculate_physics_metrics(
-            y_pred, y_eval, w_eval, training=False,
-            min_bkg_events=10,
-            log_plots=True,
-            f_name=out_dir / f"sic_plots_MX-{int(round(mx.item()))}_MY-{int(round(my.item()))}.png"
-        )
-
-        key = f"MX-{int(round(mx.item()))}_MY-{int(round(my.item()))}"
-        logger.info(f"Mass {key}: AUC={metrics['auc']:.4f}, Max SIC={metrics['max_sic']:.4f}")
-
-        # ---- plots ----
-        plot_score_overlay(
-            y_eval=y_eval,
-            y_pred=y_pred,
-            w_eval=w_eval,
-            p_eval=p_eval,
-            fname=out_dir / f"score_{key}.png",
-        )
-
-        # ---- save metrics ----
-        results = {
-            "auc": float(metrics["auc"]),
-            "max_sic": float(metrics["max_sic"]),
-            "max_sic_unc": float(metrics["max_sic_unc"]),
-            "sic": metrics["sic"].tolist(),
-            "sic_unc": metrics["sic_unc"].tolist(),
-        }
-        with open(out_dir / f"metrics_{key}.json", "w") as f:
-            json.dump(results, f, indent=4)
+            # ---- save metrics ----
+            results = {
+                "auc": float(metrics["auc"]),
+                "max_sic": float(metrics["max_sic"]),
+                "max_sic_unc": float(metrics["max_sic_unc"]),
+                "trafo_bin_sig": float(metrics["trafo_bin_sig"]),
+                "sic": metrics["sic"].tolist(),
+                "sic_unc": metrics["sic_unc"].tolist(),
+                "trafo_edge": metrics["trafo_edge"].tolist(),
+                # "fitting_time": end_time - start_time,
+            }
+            with open(out_dir / f"eval_metrics_{key}.json", "w") as f:
+                json.dump(results, f, indent=4)
 
     logger.info(f"Done. Results saved to {out_dir}")
 
@@ -744,14 +802,18 @@ if __name__ == "__main__":
 
     # IO
     parser.add_argument("--out_dir", type=str, default="results")
+    parser.add_argument("--in_dir", type=str, default="results", help="input directory that differs from out_dir")
     parser.add_argument("--pretrain", action="store_true", help="Use pretrained model weights")
     parser.add_argument("--learning_rate", type=float, default=1e-3, help="Learning rate for training")
-    parser.add_argument("--param-mx-step", type=int, default=None)
-    parser.add_argument("--param-my-step", type=int, default=None)
+    parser.add_argument("--param-mx-step", type=int, default=1)
+    parser.add_argument("--param-my-step", type=int, default=1)
     parser.add_argument("--lumi", type=float, default=36000)
 
     parser.add_argument("--ensemble", type=int, default=1, help="Number of ensemble models to train")
     parser.add_argument("--gamma", type=float, default=1.0, help="gamma for focal loss")
+
+    parser.add_argument("--stage", type=str, default=["train", "predict", "evaluate"], nargs="+",
+                        help="Pipeline stages to run")
 
     # logging
     parser.add_argument("--wandb_test", action="store_true")

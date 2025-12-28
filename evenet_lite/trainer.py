@@ -7,6 +7,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 import numpy as np
 import torch
 import torch.distributed as dist
+from numpy import ndarray
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
 
@@ -1028,7 +1029,7 @@ class Trainer:
             targets_list: List[torch.Tensor],
             weights_list: List[torch.Tensor],
             training: bool,
-    ) -> Dict[str, float]:
+    ) -> dict[Any, Any] | dict[str, ndarray]:
         if self.num_classes and self.num_classes != 2 and not self._warned_non_binary_physics:
             logging.warning(
                 "Default physics metrics assume binary classification with signal label = 1. "
@@ -1054,7 +1055,12 @@ class Trainer:
             wandb_run=self.wandb_run,
             log_step=self.global_step,
         )
-        return {"auc": metrics["auc"], "max_sic": metrics["max_sic"], "max_sic_unc": metrics["max_sic_unc"]}
+        return {
+            "auc": metrics["auc"],
+            "max_sic": metrics["max_sic"],
+            "max_sic_unc": metrics["max_sic_unc"],
+            "trafo_bin_sig": metrics["trafo_bin_sig"],
+        }
 
     def _log_epoch_stdout(self, epoch: int, total_epochs: int, metrics: Dict[str, float]) -> None:
         msg_parts = [f"Epoch {epoch + 1}/{total_epochs}"]
@@ -1067,6 +1073,9 @@ class Trainer:
             "val_accuracy",
             "val_auc",
             "val_max_sic",
+
+            "train_trafo_bin_sig",
+            "val_trafo_bin_sig",
         ]:
             if key in metrics:
                 msg_parts.append(f"{key}={metrics[key]:.4f}")
@@ -1264,7 +1273,7 @@ class Trainer:
                     min_bkg_events=self.config.sic_min_bkg_events,
                     log_plots=self.wandb_run is not None,
                     wandb_run=self.wandb_run,
-                    f_name=Path(output_path) / "eval.png",
+                    f_name=f"{output_path}/eval.png" if output_path else None,
                 )
             )
 
