@@ -20,9 +20,8 @@ SIG_PROCESS = "NMSSM_XToYHTo2B2Tau"
 SIG_PATTERN = re.compile(
     r"NMSSM_XToYHTo2B2Tau_(?P<seed>\d+)_m35-(?P<m1>\d+)_m45-(?P<m2>\d+)\.root"
 )
-GEN_PATTERN = re.compile(
-    r"(?P<proc>[^_]+)_(?P<seed>\d+)\.root"
-)
+GEN_PATTERN = re.compile(r"(?P<proc>.+)_(?P<seed>\d+)\.root$")
+
 
 
 def parse_filename(path) -> Dict[str, object]:
