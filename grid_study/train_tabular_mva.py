@@ -535,6 +535,10 @@ def run_pipeline(args):
             w_eval = np.array(pred_data['w'])
             p_eval = np.array(pred_data['proc'])
 
+            nevents_by_name = {ds.category: ds.nevents if ds.category != 'signal' else 1.0 for ds in all_datasets }
+            nevents_eval = np.array([nevents_by_name[p] for p in p_eval])
+            w_eval = w_eval / nevents_eval
+
             # D. Metrics
             metrics = calculate_physics_metrics(
                 y_pred, y_eval, w_eval, training=False,
@@ -546,7 +550,8 @@ def run_pipeline(args):
                 Zs=10,
                 Zb=5,
                 min_bkg_per_bin=3,
-                min_mc_stats=1.0,
+                min_mc_stats=0.2,
+                include_signal_in_stat=False,
             )
 
             key = f"MX-{int(mx)}_MY-{int(my)}"
@@ -556,7 +561,9 @@ def run_pipeline(args):
                 "max_sic_unc": float(metrics['max_sic_unc']),
                 # "fitting_time": fitting_time
             }
-            logger.info(f"Mass {key}: AUC={metrics['auc']:.4f}, Max SIC={metrics['max_sic']:.4f}")
+            logger.info(
+                f"Mass {key}: AUC={metrics['auc']:.4f}, Max SIC={metrics['max_sic']:.4f}, Bin SIG={metrics['trafo_bin_sig']:.4f}")
+
 
             plot_score_overlay(
                 y_eval=y_eval,
@@ -565,6 +572,16 @@ def run_pipeline(args):
                 y_pred=y_pred,
                 fname = out_dir / f"score_MX-{int(mx)}_MY-{int(my)}.png"
             )
+            plot_score_overlay(
+                y_eval=y_eval,
+                y_pred=y_pred,
+                w_eval=w_eval,
+                p_eval=p_eval,
+                bins=metrics['trafo_edge'],
+                uniform_bin_plot=True,
+                fname = out_dir / f"score_MX-{int(mx)}_MY-{int(my)}.png"
+            )
+
             with open(out_dir / f"eval_metrics_MX-{int(mx)}_MY-{int(my)}.json", "w") as f:
                 json.dump(results, f, indent=4)
     logger.info(f"Done. Results saved to {out_dir}")
