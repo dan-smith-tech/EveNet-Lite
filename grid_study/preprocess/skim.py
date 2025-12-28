@@ -23,7 +23,6 @@ SIG_PATTERN = re.compile(
 GEN_PATTERN = re.compile(r"(?P<proc>.+)_(?P<seed>\d+)\.root$")
 
 
-
 def parse_filename(path) -> Dict[str, object]:
     p = Path(path)  # normalize: works for str or Path
     name = p.name  # only the filename, no directory
@@ -492,10 +491,10 @@ def process_one_process(task):
     save_shard(input_tensor_evenet, outdir, shard_id, folder_name, method="evenet")
     save_shard(input_tensor_tabular, outdir, shard_id, folder_name, method="xgb")
 
-    with open(outdir / "cutflow.json", "w") as f:
-        json.dump(cutflow_total, f, indent=2)
+    # with open(outdir / "cutflow.json", "w") as f:
+    #     json.dump(cutflow_total, f, indent=2)
 
-    return process_key
+    return process_key, cutflow_total, outdir
 
 
 def process_grid_folder(
@@ -519,13 +518,27 @@ def process_grid_folder(
 
         tasks.append((key, files, outdir, chunk_size, grid_dir.name))
 
+    cutflows = defaultdict(lambda: {
+        "out": None,
+        "cutflow": defaultdict(int),
+    })
+
     with Pool(n_workers) as pool:
-        for _ in tqdm(
+        for process_key, cutflow, outdir in tqdm(
                 pool.imap_unordered(process_one_process, tasks),
                 total=len(tasks),
                 desc=f"{grid_dir.name}",
         ):
-            pass
+            # store / overwrite outdir (last one wins, or make it a list if needed)
+            cutflows[process_key]["out"] = outdir
+
+            # accumulate cutflow
+            for cut, count in cutflow.items():
+                cutflows[process_key]["cutflow"][cut] += count
+
+    for process in cutflows:
+        with open(cutflows[process]['out'] / "cutflow.json", "w") as f:
+            json.dump(cutflows[process]['cutflow'], f, indent=2)
 
 
 def run_all_grids(
@@ -539,7 +552,7 @@ def run_all_grids(
     output_root = Path(output_root)
 
     for grid_dir in sorted(input_root.glob(folder_structure)):
-        print(f"\n=== Processing {grid_dir.name} ===")
+        print(f"\n=== Processing {grid_dir} ===")
         process_grid_folder(
             grid_dir,
             output_root,
@@ -591,6 +604,7 @@ if __name__ == '__main__':
         )
 
         return parser.parse_args()
+
 
     args = parse_args()
 
