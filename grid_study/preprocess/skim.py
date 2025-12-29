@@ -480,6 +480,14 @@ def process_one_process(task):
         input_tabular = build_event_tabular(event_tensor)
         all_input_tabular.append(input_tabular)
 
+    if len(all_inputs_evenet) == 0 or len(all_input_tabular) == 0:
+        print(
+            "[skip] process=%s: no events passed selection (valid_files=%d)",
+            process_key,
+            len(valid_files),
+        )
+        return process_key, cutflow_total, None
+
     input_tensor_evenet = {
         k: torch.concat([d[k] for d in all_inputs_evenet], dim=0)
         for k in all_inputs_evenet[0].keys()
@@ -557,10 +565,11 @@ def run_all_grids(
                 desc="Processing all grids",
         ):
             if process_key is not None:
-                cutflows[process_key]["out"] = outdir
-
-                for cut, count in cutflow.items():
-                    cutflows[process_key]["cutflow"][cut] += count
+                if outdir is not None:
+                    cutflows[process_key]["out"] = outdir
+                if cutflow is not None:
+                    for cut, count in cutflow.items():
+                        cutflows[process_key]["cutflow"][cut] += count
 
     # write outputs
     for process_key, info in cutflows.items():
