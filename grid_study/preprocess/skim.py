@@ -438,6 +438,8 @@ def process_one_process(task):
                     print(f"[skip] no Delphes tree: {f}")
         except Exception as e:
             print(f"[skip] broken file: {f} ({e})")
+    if len(valid_files) == 0:
+        return None, None, None
 
     for arrays, report in uproot.iterate(
             [f"{f}:Delphes" for f in valid_files],
@@ -554,10 +556,11 @@ def run_all_grids(
                 total=len(tasks),
                 desc="Processing all grids",
         ):
-            cutflows[process_key]["out"] = outdir
+            if process_key is not None:
+                cutflows[process_key]["out"] = outdir
 
-            for cut, count in cutflow.items():
-                cutflows[process_key]["cutflow"][cut] += count
+                for cut, count in cutflow.items():
+                    cutflows[process_key]["cutflow"][cut] += count
 
     # write outputs
     for process_key, info in cutflows.items():
