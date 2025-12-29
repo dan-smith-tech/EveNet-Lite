@@ -440,7 +440,7 @@ def process_one_process(task):
             print(f"[skip] broken file: {f} ({e})")
 
     for arrays, report in uproot.iterate(
-            [f"{f}:Delphes" for f in files],
+            [f"{f}:Delphes" for f in valid_files],
             filter_name=FILTER_BRANCHES,
             step_size=chunk_size,
             library="ak",
