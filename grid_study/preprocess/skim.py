@@ -364,13 +364,8 @@ def discover_processes(grid_dir: Path):
     for f in grid_dir.glob("*.root"):
         meta = parse_filename(f)
 
-        # process key uniquely identifies physics content
         if meta["is_signal"]:
-            key = (
-                meta["proc"],
-                meta["m1"],
-                meta["m2"],
-            )
+            key = (meta["proc"], meta["m1"], meta["m2"],)
         else:
             key = (meta["proc"],)
 
@@ -432,6 +427,18 @@ def process_one_process(task):
 
     all_inputs_evenet = []
     all_input_tabular = []
+
+    valid_files = []
+    for f in files:
+        try:
+            with uproot.open(f) as root:
+                if "Delphes" in root:
+                    valid_files.append(f)
+                else:
+                    print(f"[skip] no Delphes tree: {f}")
+        except Exception as e:
+            print(f"[skip] broken file: {f} ({e})")
+
     for arrays, report in uproot.iterate(
             [f"{f}:Delphes" for f in files],
             filter_name=FILTER_BRANCHES,
