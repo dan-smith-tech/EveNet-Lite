@@ -18,7 +18,7 @@ vector.register_awkward()
 SIG_PROCESS = "NMSSM_XToYHTo2B2Tau"
 
 SIG_PATTERN = re.compile(
-    r"_MX(\d+)_.*_m35-(\d+)_\.root"
+    r".*_MX(?P<mx>\d+).*_m35-(?P<m35>\d+).*\.root$"
 )
 GEN_PATTERN = re.compile(r"(?P<proc>.+)_(?P<seed>\d+)\.root$")
 
