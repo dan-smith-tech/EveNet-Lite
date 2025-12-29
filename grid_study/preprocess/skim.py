@@ -18,7 +18,7 @@ vector.register_awkward()
 SIG_PROCESS = "NMSSM_XToYHTo2B2Tau"
 
 SIG_PATTERN = re.compile(
-    r"NMSSM_XToYHTo2B2Tau_(?P<seed>\d+)_m35-(?P<m1>\d+)_m45-(?P<m2>\d+)\.root"
+    r"_MX(\d+)_.*_m35-(\d+)_\.root"
 )
 GEN_PATTERN = re.compile(r"(?P<proc>.+)_(?P<seed>\d+)\.root$")
 
@@ -29,13 +29,11 @@ def parse_filename(path) -> Dict[str, object]:
 
     m = SIG_PATTERN.match(name)
     if m:
-        out = m.groupdict()
-        out["is_signal"] = True
-        out["path"] = str(p)
-        out["proc"] = 'NMSSM_XToYHTo2B2Tau'
-        out["seed"] = int(out["seed"])
-        out["m1"] = int(out["m1"])
-        out["m2"] = int(out["m2"])
+        out = {
+            "is_signal": True, "path": str(p), "proc": 'NMSSM_XToYHTo2B2Tau',
+            "m1": int(m.group(1)),
+            "m2": int(m.group(2))
+        }
         return out
 
     m = GEN_PATTERN.match(name)
@@ -44,7 +42,6 @@ def parse_filename(path) -> Dict[str, object]:
         out["is_signal"] = False
         out["path"] = str(p)
         out["proc"] = str(out["proc"])
-        out["seed"] = int(out["seed"])
         return out
 
     raise ValueError(f"Unrecognized filename: {p}")
@@ -495,10 +492,10 @@ def process_one_process(task):
 
 
 def build_all_tasks(
-    input_root: Path,
-    output_root: Path,
-    folder_structure: str,
-    chunk_size,
+        input_root: Path,
+        output_root: Path,
+        folder_structure: str,
+        chunk_size,
 ):
     tasks = []
 
@@ -523,11 +520,11 @@ def build_all_tasks(
 
 
 def run_all_grids(
-    input_root,
-    output_root,
-    folder_structure="grid_*",
-    n_workers=8,
-    chunk_size="1000MB",
+        input_root,
+        output_root,
+        folder_structure="grid_*",
+        n_workers=8,
+        chunk_size="1000MB",
 ):
     input_root = Path(input_root)
     output_root = Path(output_root)
@@ -546,9 +543,9 @@ def run_all_grids(
 
     with Pool(n_workers) as pool:
         for process_key, cutflow, outdir in tqdm(
-            pool.imap_unordered(process_one_process, tasks),
-            total=len(tasks),
-            desc="Processing all grids",
+                pool.imap_unordered(process_one_process, tasks),
+                total=len(tasks),
+                desc="Processing all grids",
         ):
             cutflows[process_key]["out"] = outdir
 
