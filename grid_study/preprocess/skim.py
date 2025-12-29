@@ -491,32 +491,53 @@ def process_one_process(task):
     save_shard(input_tensor_evenet, outdir, shard_id, folder_name, method="evenet")
     save_shard(input_tensor_tabular, outdir, shard_id, folder_name, method="xgb")
 
-    # with open(outdir / "cutflow.json", "w") as f:
-    #     json.dump(cutflow_total, f, indent=2)
-
     return process_key, cutflow_total, outdir
 
 
-def process_grid_folder(
-        grid_dir: Path,
-        output_root: Path,
-        n_workers: int,
-        chunk_size: Union[int, str],
+def build_all_tasks(
+    input_root: Path,
+    output_root: Path,
+    folder_structure: str,
+    chunk_size,
 ):
-    processes = discover_processes(grid_dir)
-
     tasks = []
-    for key, files in processes.items():
-        if len(key) == 3:
-            proc, m1, m2 = key
-            # outdir = output_root / f"{proc}_m35-{m1}_m45-{m2}"
-            outdir = output_root / f"MX-{m1}_MY-{m2}"
-        else:
-            proc = key[0]
-            # outdir = output_root / grid_dir.name / proc
-            outdir = output_root / proc
 
-        tasks.append((key, files, outdir, chunk_size, grid_dir.name))
+    for grid_dir in sorted(input_root.glob(folder_structure)):
+        processes = discover_processes(grid_dir)
+        rel = grid_dir.relative_to(input_root)
+        grid_name = "_".join(rel.parts)
+
+        for key, files in processes.items():
+            if len(key) == 3:
+                proc, m1, m2 = key
+                outdir = output_root / f"MX-{m1}_MY-{m2}"
+            else:
+                proc = key[0]
+                outdir = output_root / proc
+
+            tasks.append(
+                (key, files, outdir, chunk_size, grid_name)
+            )
+
+    return tasks
+
+
+def run_all_grids(
+    input_root,
+    output_root,
+    folder_structure="grid_*",
+    n_workers=8,
+    chunk_size="1000MB",
+):
+    input_root = Path(input_root)
+    output_root = Path(output_root)
+
+    tasks = build_all_tasks(
+        input_root,
+        output_root,
+        folder_structure,
+        chunk_size,
+    )
 
     cutflows = defaultdict(lambda: {
         "out": None,
@@ -525,40 +546,23 @@ def process_grid_folder(
 
     with Pool(n_workers) as pool:
         for process_key, cutflow, outdir in tqdm(
-                pool.imap_unordered(process_one_process, tasks),
-                total=len(tasks),
-                desc=f"{grid_dir.name}",
+            pool.imap_unordered(process_one_process, tasks),
+            total=len(tasks),
+            desc="Processing all grids",
         ):
-            # store / overwrite outdir (last one wins, or make it a list if needed)
             cutflows[process_key]["out"] = outdir
 
-            # accumulate cutflow
             for cut, count in cutflow.items():
                 cutflows[process_key]["cutflow"][cut] += count
 
-    for process in cutflows:
-        with open(cutflows[process]['out'] / "cutflow.json", "w") as f:
-            json.dump(cutflows[process]['cutflow'], f, indent=2)
+    # write outputs
+    for process_key, info in cutflows.items():
+        outdir = info["out"]
+        outdir.mkdir(parents=True, exist_ok=True)
+        with open(outdir / "cutflow.json", "w") as f:
+            json.dump(info["cutflow"], f, indent=2)
 
-
-def run_all_grids(
-        input_root,
-        output_root,
-        folder_structure="grid_*",
-        n_workers=8,
-        chunk_size="1000MB",
-):
-    input_root = Path(input_root)
-    output_root = Path(output_root)
-
-    for grid_dir in sorted(input_root.glob(folder_structure)):
-        print(f"\n=== Processing {grid_dir} ===")
-        process_grid_folder(
-            grid_dir,
-            output_root,
-            n_workers,
-            chunk_size,
-        )
+    return cutflows
 
 
 if __name__ == '__main__':
