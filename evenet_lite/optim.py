@@ -43,7 +43,7 @@ def set_peft_trainable(model: torch.nn.Module, train_layernorm: bool = True):
                 if ("ObjectEncoder" in name):
                     p.requires_grad_(True)
 
-            # 3) optional: unfreeze LayerNorm
+            # 3) optional: unfreeze LayerNorm (很常有幫助)
             if train_layernorm:
                 for mod in m.backbone.modules():
                     if isinstance(mod, torch.nn.LayerNorm):
@@ -60,7 +60,7 @@ def set_peft_trainable(model: torch.nn.Module, train_layernorm: bool = True):
             if ("adapters" in name) or ("GlobalEmbedding" in name) or ("ObjectEncoder" in name):
                 p.requires_grad_(True)
 
-        # 3) optional: unfreeze LayerNorm
+        # 3) optional: unfreeze LayerNorm (很常有幫助)
         if train_layernorm:
             for mod in m.backbone.modules():
                 if isinstance(mod, torch.nn.LayerNorm):
