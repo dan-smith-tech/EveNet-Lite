@@ -222,7 +222,8 @@ def build_event_tensor(objs):
             ak.to_numpy(ak.sum(jets.pt, axis=1)),
             ak.to_numpy(ak.sum(leptons.pt, axis=1)),
             ak.to_numpy(inv_mass(jets)),
-            ak.to_numpy(inv_mass(leptons)),
+            np.maximum(ak.to_numpy(inv_mass(leptons)), 0),
+            # np.zeros_like(ak.sum(jets.pt, axis=1)),
             ak.to_numpy(inv_mass(bjets)),
         ], axis=1)
 
