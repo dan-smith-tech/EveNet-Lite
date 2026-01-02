@@ -127,6 +127,7 @@ CUTFLOW_STEPS = OrderedDict([
     ("1_lepton", lambda o: ak.num(o["leptons"]) == 1),
     ("1_tau", lambda o: ak.num(o["taus"]) == 1),
     (">=1_bjet", lambda o: ak.num(o["bjets"]) >= 1),
+    ("OS lepton-tau pair", lambda o: ak.sum(o["leptons"].charge, axis=1) + ak.sum(o["taus"].charge, axis=1) == 0),
 ])
 
 
