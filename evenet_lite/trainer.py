@@ -20,6 +20,8 @@ from .optim import (
     DEFAULT_LR_GROUPS,
     DEFAULT_MODULE_GROUPS,
     DEFAULT_WEIGHT_DECAY,
+    set_peft_trainable,
+    print_trainable
 )
 
 
@@ -98,6 +100,7 @@ class TrainerConfig:
     early_stop_minimize: bool = True
     early_stop_patience: int = 0
     find_unused_parameters: bool = True
+    use_peft: bool = False  # new field to indicate whether to use PEFT
 
 
 class Trainer:
@@ -236,6 +239,7 @@ class Trainer:
             job_type=wandb_settings.get("job_type"),
             tags=wandb_settings.get("tags"),
             notes=wandb_settings.get("notes"),
+            dir=wandb_settings.get("dir", "./"),
             reinit=True,
         )
         logging.info("Initialized Weights & Biases run: %s", self.wandb_run.name if self.wandb_run else "<none>")
@@ -474,6 +478,13 @@ class Trainer:
             self.val_loader = val_loader
 
             steps_per_epoch = max(1, len(train_loader))
+
+            # set peft
+            if getattr(self.config, "use_peft", True):
+                set_peft_trainable(self.model, train_layernorm=True)
+                if self.is_rank_zero():
+                    print_trainable(self.model)
+
             self._setup_optimizers_and_schedulers(epochs, steps_per_epoch)
 
             if self.config.resume_from:
@@ -841,6 +852,31 @@ class Trainer:
             self._warn_if_global_dim_mismatch(prepared["globals"])
         return prepared
 
+    def _set_model_mode(self, model: torch.nn.Module, training: bool) -> None:
+        if not training:
+            model.eval()
+            return
+
+        model.train()
+        return
+        #
+        # if not getattr(self.config, "use_peft", False):
+        #     return
+        #
+        # # PEFT: backbone eval, adapters/head train
+        #
+        #
+        # m = self._unwrap_model()
+        #
+        #
+        # if hasattr(m, "PET"):
+        #     m.PET.eval()
+        #     if hasattr(m.PET, "adapters"):
+        #         m.PET.adapters.train()
+        # for mod in m.modules():
+        #     if isinstance(mod, torch.nn.LayerNorm):
+        #         mod.train()
+
     def _run_epoch(
             self,
             model: torch.nn.Module,
@@ -848,10 +884,11 @@ class Trainer:
             epoch: int,
             training: bool,
     ) -> Dict[str, float]:
-        if training:
-            model.train()
-        else:
-            model.eval()
+        # if training:
+        #     model.train()
+        # else:
+        #     model.eval()
+        self._set_model_mode(model, training)
 
         metric_sum: Dict[str, float] = {"loss": 0.0, "accuracy": 0.0}
         metric_count: Dict[str, int] = {"loss": 0, "accuracy": 0}
@@ -900,11 +937,17 @@ class Trainer:
                                   f"[Rank {self.rank}] Non-finite logits detected\n"
                                   f"min={outputs.min().item()}, max={outputs.max().item()}"
                                   )
-                loss = compute_loss(outputs, targets, weight_tensor, gamma=self.config.loss_gamma)
+
+                weighted_sampler = isinstance(loader.sampler, DistributedWeightedSampler)
+                weight_tensor_input = weight_tensor if not weighted_sampler else torch.ones_like(weight_tensor)
+                loss = compute_loss(outputs, targets, weight_tensor_input, gamma=self.config.loss_gamma)
                 if training:
                     optimizers = self.optimizers or ([self.optimizer] if self.optimizer else [])
                     for optimizer in optimizers:
                         optimizer.zero_grad()
+                    if not torch.isfinite(loss).all().item():
+                        print("[Rank %d] Non-finite loss detected; skipping backward step." % self.rank)
+                        return
                     loss.backward()
                     if self.config.grad_clip:
                         torch.nn.utils.clip_grad_norm_(model.parameters(), self.config.grad_clip)
@@ -922,7 +965,7 @@ class Trainer:
             # else:
             #     # Optional: track how often this happens
             #     metric_sum["nan_loss"] += 1
-            metric_count["loss"] += targets.size(0)
+            # metric_count["loss"] += targets.size(0)
 
             logits_for_metrics = outputs.mean(dim=0) if outputs.dim() == 3 else outputs
             preds = torch.argmax(logits_for_metrics, dim=1)

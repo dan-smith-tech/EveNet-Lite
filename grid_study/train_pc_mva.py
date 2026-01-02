@@ -6,6 +6,8 @@ import json
 import yaml
 import numpy as np
 import logging
+
+
 from dataclasses import dataclass
 from typing import List, Dict, Optional, Tuple, Any
 from pathlib import Path
@@ -166,12 +168,23 @@ class ConfigLoader:
         for folder in existing_folders:
             if "MX-" in folder.name:
                 mx, my = self.parse_mass(folder.name)
+                cutflow_json = folder / "cutflow.json"
+                if os.path.exists(cutflow_json):
+                    with open(cutflow_json, "r") as f:
+                        cutflow = json.load(f)
+                        nevents = cutflow.get("all", None)
+                        print("nevents from cutflow", nevents)
+
+                        if nevents is None:
+                            raise ValueError(f"Cutflow 'all' key not found in {cutflow_json}")
+                else:
+                    nevents = 184000
                 found_datasets.append(DatasetInfo(
                     name=folder.name,
                     path=folder,
                     is_signal=True,
-                    xsec=1.0,
-                    nevents=184000,  # TODO: make configurable, now hardcoded
+                    xsec=0.01, # 10 fb
+                    nevents=nevents,  # TODO: make configurable, now hardcoded
                     mx=mx,
                     my=my,
                     category="signal"
@@ -196,7 +209,8 @@ class EveNetDatasetManager:
             datasets: List[DatasetInfo],
             split: str = "train",
             target_masses: Optional[np.ndarray] = None,
-            lumi: float = 1.0
+            lumi: float = 1.0,
+            max_entries = None
     ) -> Dict[str, Any]:
         """
         Loads .pt files for EveNet.
@@ -220,11 +234,11 @@ class EveNetDatasetManager:
             files = list(search_path.glob("*.pt"))
             if not files:
                 continue
-
             for fp in files:
                 try:
                     data = torch.load(fp, map_location="cpu", weights_only=False)  # force CPU to avoid device mismatch
                     if "x" not in data:
+                        print("x not in data")
                         continue
 
                     x_data = data["x"]
@@ -236,8 +250,11 @@ class EveNetDatasetManager:
 
                     # --- globals/mask ---
                     g = data.get("global")
+                    if g is None:
+                        g = data.get("globals")
                     msk = data.get("x_mask")
                     if g is None or msk is None:
+                        print("globals or mask missing")
                         continue  # not a valid evenet sample
 
                     g = torch.as_tensor(g, device="cpu").to(torch.float32)
@@ -257,14 +274,12 @@ class EveNetDatasetManager:
                     # avoid python floats leaking dtype/device
                     xsec = float(ds.xsec)
                     nevents = float(ds.nevents) if float(ds.nevents) != 0.0 else 1.0
-                    phys_w = raw_w * (xsec * lumi / nevents)
+                    phys_w = raw_w * (xsec * lumi / nevents) * 2 #ratio split for 2
                     # if split == "train":
                     #     phys_w = phys_w.abs()
 
                     # --- labels ---
-                    y = torch.ones(N, dtype=torch.float32, device="cpu") if ds.is_signal else torch.zeros(N,
-                                                                                                          dtype=torch.float32,
-                                                                                                          device="cpu")
+                    y = torch.ones(N, dtype=torch.float32, device="cpu") if ds.is_signal else torch.zeros(N,dtype=torch.float32, device="cpu")
 
                     # --- mass injection: make [N, 2] float32 ---
                     if ds.is_signal:
@@ -307,6 +322,28 @@ class EveNetDatasetManager:
         # Ensure globals shape (common fix: [N] -> [N, 1])
         if final_data["globals"].ndim == 1:
             final_data["globals"] = final_data["globals"].unsqueeze(1)
+
+        if max_entries is not None:
+            # random get max entries
+            N = final_data["x"].shape[0]
+            max_n = min(int(max_entries), N)
+
+            # sample indices (no replacement)
+            idx = torch.randperm(N, device=final_data["x"].device)[:max_n]
+
+            # torch tensors
+            for k in ["x", "globals", "x_mask", "y", "w", "m"]:
+                v = final_data[k]
+                # if some tensor is on CPU and idx on GPU (or vice versa), move idx
+                if isinstance(v, torch.Tensor) and v.device != idx.device:
+                    idx_use = idx.to(v.device)
+                else:
+                    idx_use = idx
+                final_data[k] = v.index_select(0, idx_use)
+
+            # proc (numpy/object array)
+            final_data["proc"] = final_data["proc"][idx.cpu().numpy()]
+
 
         return final_data
 
@@ -440,7 +477,7 @@ def run_pipeline(args):
 
     logger.info(">>> Loading Background (Train)...")
     # Pass numpy if your loader expects numpy; otherwise pass torch and convert inside loader
-    d_bkg_tr = dm.load_data(bkg_datasets, "train", target_masses=target_masses.cpu().numpy(), lumi=args.lumi)
+    d_bkg_tr = dm.load_data(bkg_datasets, "train", target_masses=target_masses.cpu().numpy(), lumi=args.lumi, max_entries=args.max_bkg_entries)
 
     # ---- global balance: scale background to match total signal weight ----
     sig_sum = d_sig_tr["w"].sum()
@@ -541,10 +578,31 @@ def run_pipeline(args):
             }
 
         learning_rate = args.learning_rate if hasattr(args, 'learning_rate') else 1e-3
-        learning_rates = [learning_rate] if not args.pretrain else [0.1 * learning_rate, 0.3 * learning_rate,
+
+        body_frozen_factor = 0.1 if args.freeze_type == "partial" else 0.0 if args.freeze_type == "all" else 1.0
+        mediate_frozen_factor = 0.3 if args.freeze_type == "partial" else 0.1 if args.freeze_type == "all" else 1.0
+        learning_rates = [learning_rate] if not args.pretrain else [body_frozen_factor * learning_rate, mediate_frozen_factor * learning_rate,
                                                                     learning_rate]
+
         module_lists = [["Classification", "ObjectEncoder", "PET", "GlobalEmbedding"]] if not args.pretrain else [
             ["PET"], ["ObjectEncoder", "GlobalEmbedding"], ["Classification"]]
+
+        learning_rates_new = []
+        module_lists_new = []
+
+        for lr, ml in zip(learning_rates, module_lists):
+            if lr < 1e-10:
+                continue
+            else:
+                learning_rates_new.append(lr)
+                module_lists_new.append(ml)
+
+        learning_rates = learning_rates_new
+        module_lists = module_lists_new
+
+
+
+        print("learning for each module:", learning_rates, module_lists)
         weight_decay = [1e-4 for x in learning_rates]
         # ---- train ----
         world_size = int(os.environ.get("WORLD_SIZE", "1"))
@@ -570,7 +628,7 @@ def run_pipeline(args):
 
             epochs=args.epochs,
             batch_size=args.batch_size,
-            # sampler="weighted",
+            sampler=args.sampler,
 
             checkpoint_path=str(ckpt_dir),
             save_top_k=1,
@@ -583,7 +641,7 @@ def run_pipeline(args):
                 'project': 'EveNet-GridSearch',
                 'name': f"{model_str}-{mode_str}-{mass_target}{'-test' if args.wandb_test else ''}",
                 'entity': "ytchou97-university-of-washington",
-                'save_dir': "/pscratch/sd/t/tihsu/tmp/wandb"
+                'dir': "/pscratch/sd/t/tihsu/tmp/wandb"
             },
             pretrained=args.pretrain,
             pretrained_path="/global/cfs/cdirs/m5019/avencast/Checkpoints/checkpoints.20M.ablation.4.newcls/last.ckpt",
@@ -593,7 +651,9 @@ def run_pipeline(args):
             weight_decay=weight_decay,
             early_stop_patience=3,
             n_ensemble=args.ensemble,
-            loss_gamma=args.gamma
+            loss_gamma=args.gamma,
+            use_adapter=args.use_adapter,
+            use_peft=args.use_adapter
         )
         end_time = time.time()
 
@@ -606,7 +666,8 @@ def run_pipeline(args):
             classifier = EvenetLiteClassifier(
                 class_labels=["background", "signal"],
                 global_input_dim=global_dim,
-                n_ensemble=args.ensemble
+                n_ensemble=args.ensemble,
+                use_adapter=args.use_adapter
             )
             # load lastest checkpoint from ckpt_dir
             ckpt_files = list(ckpt_dir.glob("*.pt"))
@@ -721,7 +782,7 @@ def run_pipeline(args):
 
             nevents_by_name = {ds.category: ds.nevents if ds.category != 'signal' else 1.0 for ds in all_datasets }
             nevents_eval = np.array([nevents_by_name[p] for p in p_eval])
-            w_eval = w_eval / nevents_eval
+            # w_eval = w_eval / nevents_eval
 
             mx = predict_value["mx"]
             my = predict_value["my"]
@@ -747,14 +808,14 @@ def run_pipeline(args):
                 f"Mass {key}: AUC={metrics['auc']:.4f}, Max SIC={metrics['max_sic']:.4f}, Bin SIG={metrics['trafo_bin_sig']:.4f}")
 
             # ---- plots ----
+
             plot_score_overlay(
                 y_eval=y_eval,
-                y_pred=y_pred,
                 w_eval=w_eval,
                 p_eval=p_eval,
-                fname=out_dir / f"score_{key}.png",
+                y_pred=y_pred,
+                fname = out_dir / f"score_uniform_binning_MX-{int(mx)}_MY-{int(my)}.png"
             )
-
             plot_score_overlay(
                 y_eval=y_eval,
                 y_pred=y_pred,
@@ -762,7 +823,16 @@ def run_pipeline(args):
                 p_eval=p_eval,
                 bins=metrics['trafo_edge'],
                 uniform_bin_plot=True,
-                fname=out_dir / f"score_trafo_{key}.png",
+                fname = out_dir / f"score_auto_binning_flat_MX-{int(mx)}_MY-{int(my)}.png"
+            )
+            plot_score_overlay(
+                y_eval=y_eval,
+                y_pred=y_pred,
+                w_eval=w_eval,
+                p_eval=p_eval,
+                bins=metrics['trafo_edge'],
+                uniform_bin_plot=False,
+                fname = out_dir / f"score_auto_binning_MX-{int(mx)}_MY-{int(my)}.png"
             )
 
             # ---- save metrics ----
@@ -799,24 +869,27 @@ if __name__ == "__main__":
     parser.add_argument("--parameterize", action="store_true", help="Include Mass as input")
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch_size", type=int, default=512)
+    parser.add_argument("--sampler", type=str, default=None)
 
     # IO
     parser.add_argument("--out_dir", type=str, default="results")
-    parser.add_argument("--in_dir", type=str, default="results", help="input directory that differs from out_dir")
+    parser.add_argument("--in_dir", type=str, default=None, help="input directory that differs from out_dir")
     parser.add_argument("--pretrain", action="store_true", help="Use pretrained model weights")
     parser.add_argument("--learning_rate", type=float, default=1e-3, help="Learning rate for training")
     parser.add_argument("--param-mx-step", type=int, default=1)
     parser.add_argument("--param-my-step", type=int, default=1)
-    parser.add_argument("--lumi", type=float, default=36000)
+    parser.add_argument("--lumi", type=float, default=300000)
 
     parser.add_argument("--ensemble", type=int, default=1, help="Number of ensemble models to train")
-    parser.add_argument("--gamma", type=float, default=1.0, help="gamma for focal loss")
+    parser.add_argument("--gamma", type=float, default=0.0, help="gamma for focal loss" )
 
     parser.add_argument("--stage", type=str, default=["train", "predict", "evaluate"], nargs="+",
                         help="Pipeline stages to run")
-
+    parser.add_argument("--freeze_type", type=str, default="partial", choices=["none", "partial", "all"],)
+    parser.add_argument("--max_bkg_entries", type=int, default=None, help="Max entries to load for training/testing")
     # logging
     parser.add_argument("--wandb_test", action="store_true")
+    parser.add_argument("--use_adapter", action="store_true")
 
     args = parser.parse_args()
 

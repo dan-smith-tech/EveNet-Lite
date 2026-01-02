@@ -2,7 +2,6 @@ import logging
 import math
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, List, Sequence, Tuple
-
 import torch
 
 DEFAULT_HEAD_LR = 1e-3
@@ -19,6 +18,62 @@ DEFAULT_MODULE_GROUPS: List[List[str]] = [
 def unwrap_model(model: torch.nn.Module):
     return model.module if hasattr(model, "module") else model
 
+def _get_by_path(root: torch.nn.Module, path: str) -> torch.nn.Module | None:
+    cur: Any = root
+    for part in path.split("."):
+        if not hasattr(cur, part):
+            return None
+        cur = getattr(cur, part)
+    return cur if isinstance(cur, torch.nn.Module) else None
+
+def set_peft_trainable(model: torch.nn.Module, train_layernorm: bool = True):
+    if model.ensemble_mode == "independent":
+        for model_element in  model.models:
+            m = unwrap_model(model_element)
+            # 1) freeze all
+            for p in m.backbone.parameters():
+                p.requires_grad_(False)
+
+            # 2) unfreeze adapters + head
+            for name, p in m.backbone.named_parameters():
+                if ("adapters" in name):
+                    p.requires_grad_(True)
+                if ("GlobalEmbedding" in name):
+                    p.requires_grad_(True)
+                if ("ObjectEncoder" in name):
+                    p.requires_grad_(True)
+
+            # 3) optional: unfreeze LayerNorm (很常有幫助)
+            if train_layernorm:
+                for mod in m.backbone.modules():
+                    if isinstance(mod, torch.nn.LayerNorm):
+                        for p in mod.parameters():
+                            p.requires_grad_(True)
+    else:
+        m = unwrap_model(model)
+        # 1) freeze all
+        for p in m.backbone.parameters():
+            p.requires_grad_(False)
+
+        # 2) unfreeze adapters + head
+        for name, p in m.backbone.named_parameters():
+            if ("adapters" in name) or ("GlobalEmbedding" in name) or ("ObjectEncoder" in name):
+                p.requires_grad_(True)
+
+        # 3) optional: unfreeze LayerNorm (很常有幫助)
+        if train_layernorm:
+            for mod in m.backbone.modules():
+                if isinstance(mod, torch.nn.LayerNorm):
+                    for p in mod.parameters():
+                        p.requires_grad_(True)
+
+def print_trainable(model):
+    m = unwrap_model(model)
+    total = 0
+    for n, p in m.named_parameters():
+        if p.requires_grad:
+            total += p.numel()
+    print(f"Trainable params: {total:,}")
 
 def _collect_parameters(model: torch.nn.Module, module_names: Iterable[str]) -> List[torch.nn.Parameter]:
     params: List[torch.nn.Parameter] = []
@@ -26,11 +81,13 @@ def _collect_parameters(model: torch.nn.Module, module_names: Iterable[str]) -> 
     for name in module_names:
         base_model = unwrap_model(model)
         modules_to_collect: List[torch.nn.Module] = []
-        direct_module = getattr(base_model, name, None)
+        direct_module = _get_by_path(base_model, name) or getattr(base_model, name, None) # support nested paths
+        # direct_module = getattr(base_model, name, None)
         if direct_module is not None:
             modules_to_collect.append(direct_module)
         elif hasattr(base_model, "backbone"):
-            backbone_module = getattr(getattr(base_model, "backbone"), name, None)
+            backbone_module = _get_by_path(base_model, "backbone") or getattr(getattr(base_model, "backbone"), name, None)
+            # backbone_module = getattr(getattr(base_model, "backbone"), name, None)
             if backbone_module is not None:
                 modules_to_collect.append(backbone_module)
         if hasattr(base_model, "models"):
@@ -45,6 +102,8 @@ def _collect_parameters(model: torch.nn.Module, module_names: Iterable[str]) -> 
             continue
         for module in modules_to_collect:
             for param in module.parameters():
+                if (not param.requires_grad):
+                    continue
                 if id(param) not in seen:
                     params.append(param)
                     seen.add(id(param))

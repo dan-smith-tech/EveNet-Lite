@@ -102,6 +102,8 @@ class EvenetLiteClassifier:
             n_ensemble: int = 1,
             ensemble_mode: str = "independent",
             loss_gamma: float = 0.0,
+            use_adapter: bool = False,
+            use_peft: bool = False,
     ) -> None:
         root_logger = logging.getLogger()
         log_format = "%(asctime)s | %(levelname)s | %(message)s"
@@ -129,6 +131,7 @@ class EvenetLiteClassifier:
                 cls_label=class_labels,
                 n_ensemble=n_ensemble,
                 ensemble_mode=ensemble_mode,
+                use_adapter=use_adapter,
             )
         else:
             self.model = model
@@ -157,6 +160,7 @@ class EvenetLiteClassifier:
             wandb=wandb,
             num_workers=num_workers,
             loss_gamma=loss_gamma,
+            use_peft=use_peft,
         )
         self.trainer: Optional[Trainer] = None
         self.normalizer: Optional[EvenetLiteNormalizer] = None

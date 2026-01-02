@@ -62,6 +62,7 @@ class EveNetBackbone(nn.Module):
         config: DotDict,
         global_input_dim: int,
         sequential_input_dim: int,
+        use_adapter: bool = False,
     ) -> None:
         super().__init__()
 
@@ -102,6 +103,7 @@ class EveNetBackbone(nn.Module):
             layer_scale_init=pet_config.layer_scale_init,
             dropout=pet_config.dropout,
             mode=pet_config.mode,
+            use_adapter=use_adapter
         )
 
         # [3] Classification + Regression + Assignment Body
@@ -187,6 +189,7 @@ class EveNetLite(nn.Module):
         cls_label: List[str],
         n_ensemble: int = 1,
         ensemble_mode: str = "independent",
+        use_adapter: bool = False,
     ) -> None:
         super().__init__()
 
@@ -205,7 +208,7 @@ class EveNetLite(nn.Module):
         self.class_label = {"EVENT": cls_label}
         self.num_classes = {"EVENT": len(cls_label)}
 
-        backbone_builder = lambda: EveNetBackbone(config, global_input_dim, sequential_input_dim)
+        backbone_builder = lambda: EveNetBackbone(config, global_input_dim, sequential_input_dim, use_adapter=use_adapter)
         head_dim = config.Body.ObjectEncoder.hidden_dim
         head_builder = lambda: _build_classification_head(config, self.class_label, self.num_classes, head_dim)
 

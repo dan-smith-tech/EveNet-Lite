@@ -124,12 +124,23 @@ class ConfigLoader:
                 # mx_range = self.signal_config.get('mx', [0, 99999])
                 # if not (mx_range[0] <= mx <= mx_range[1]): continue
 
+                cutflow_json = folder / "cutflow.json"
+                if os.path.exists(cutflow_json):
+                    print("nevents from cutflow")
+                    with open(cutflow_json, "r") as f:
+                        cutflow = json.load(f)
+                        nevents = cutflow.get("all", None)
+                        if nevents is None:
+                            raise ValueError(f"Cutflow 'all' key not found in {cutflow_json}")
+                else:
+                    nevents = 184000
+
                 found_datasets.append(DatasetInfo(
                     name=folder.name,
                     path=folder,
                     is_signal=True,
-                    xsec=1.0,  # Signal often normalized differently, usually 1.0 relative
-                    nevents=184000,  #TODO: make configurable, now hardcoded
+                    xsec=0.01,  # 10 fb
+                    nevents=nevents,  #TODO: make configurable, now hardcoded
                     mx=mx,
                     my=my,
                     category="signal"
@@ -153,7 +164,7 @@ class DatasetManager:
         self.feature_names_loaded = None
 
     def load_data(self, datasets: List[DatasetInfo], split: str = "train",
-                  target_masses: Optional[np.ndarray] = None, lumi:float = 1.0) -> Dict[str, np.ndarray]:
+                  target_masses: Optional[np.ndarray] = None, lumi:float = 1.0, max_entries=None) -> Dict[str, np.ndarray]:
         """
         Loads .npz files for the given list of datasets and split (train/valid).
         Handles:
@@ -194,7 +205,7 @@ class DatasetManager:
                         # --- Weights ---
                         # Weight = (Sign of genWeight) * (xsec / total_nevents)
                         raw_w = data['weights'] if 'weights' in data else np.ones(len(arr))
-                        phys_w = raw_w * (ds.xsec * lumi / ds.nevents)
+                        phys_w = raw_w * (ds.xsec * lumi / ds.nevents) * 2 # Factor 2 for train/valid split
                         # if split == "train":
                         #     phys_w = abs(phys_w)  # Use absolute weights for training
                         #
@@ -225,13 +236,29 @@ class DatasetManager:
             logger.error(f"No data loaded for split {split}!")
             return {}
 
-        return {
-            'X': np.concatenate(X_list),
-            'y': np.concatenate(y_list),
-            'w': np.concatenate(w_list),
-            'm': np.concatenate(m_list),
-            'proc': np.concatenate(p_list)
+        out = {
+            "X":    np.concatenate(X_list, axis=0),
+            "y":    np.concatenate(y_list, axis=0),
+            "w":    np.concatenate(w_list, axis=0),
+            "m":    np.concatenate(m_list, axis=0),
+            # keep proc as object to avoid weird unicode truncation surprises
+            "proc": np.concatenate([np.asarray(p, dtype=object) for p in p_list], axis=0),
         }
+
+        if max_entries is not None:
+            N = out["X"].shape[0]
+            n = min(int(max_entries), N)
+
+            # random subset, no replacement
+            idx = np.random.choice(N, size=n, replace=False)
+
+            out["X"] = out["X"][idx]
+            out["y"] = out["y"][idx]
+            out["w"] = out["w"][idx]
+            out["m"] = out["m"][idx]
+            out["proc"] = out["proc"][idx]
+
+        return out
 
     def reweight_signals(self, data: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
         """Renormalize signal weights so each mass point contributes equally."""
@@ -340,9 +367,16 @@ def plot_overtraining(model, X_tr, y_tr, w_tr, X_val, y_val, w_val, out_dir):
 
 def run_pipeline(args):
     # 1. Setup
-    mode_str = "parametrized" if args.parameterize else "individual"
+    # --- output dir naming rule (match EveNet demo) ---
+    if args.parameterize:
+        mode_str = f"parametrized_reduce_factor_x_{args.param_mx_step}_y_{args.param_my_step}"
+    else:
+        mode_str = "individual"
+
     mass_target = "All" if args.parameterize else f"MX-{args.mX}_MY-{args.mY}"
-    out_dir = Path(args.out_dir) / args.model / mode_str / mass_target
+    model_str = args.model  # "xgb" or "tabpfn"
+
+    out_dir = Path(args.out_dir) / model_str / mode_str / mass_target
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # 2. Config & Discovery
@@ -350,30 +384,54 @@ def run_pipeline(args):
     all_datasets = cfg.discover_datasets()
 
     # Filter Signals based on args
+    # Filter Signals based on args (train vs eval for sparse parametrization)
     if args.parameterize:
-        sig_datasets = [d for d in all_datasets if d.is_signal]
+        sig_all = [d for d in all_datasets if d.is_signal]
+
+        mx_vals = sorted({d.mx for d in sig_all})
+        my_vals = sorted({d.my for d in sig_all})
+
+        mx_keep = set(mx_vals[::max(1, args.param_mx_step)])
+        my_keep = set(my_vals[::max(1, args.param_my_step)])
+
+        sig_datasets_eval = sig_all
+        sig_datasets_train = [d for d in sig_all if (d.mx in mx_keep and d.my in my_keep)]
+
+        if not sig_datasets_train:
+            logger.error("No signal datasets selected for training after applying sparse grid steps!")
+            sys.exit(1)
+
+        logger.info(
+            f"Sparse parametrization: train on {len(sig_datasets_train)} / eval on {len(sig_datasets_eval)} signal points")
     else:
-        sig_datasets = [d for d in all_datasets if d.is_signal and d.mx == args.mX and d.my == args.mY]
-        if not sig_datasets:
+        sig_datasets_train = [d for d in all_datasets if d.is_signal and d.mx == args.mX and d.my == args.mY]
+        sig_datasets_eval = sig_datasets_train
+        if not sig_datasets_train:
             logger.error(f"Signal MX={args.mX}, MY={args.mY} not found!")
             sys.exit(1)
 
     bkg_datasets = [d for d in all_datasets if not d.is_signal]
 
     # Collect all available mass points for parametrization logic
-    target_masses = np.array([[d.mx, d.my] for d in all_datasets if d.is_signal])
+    target_masses = np.array([[d.mx, d.my] for d in sig_datasets_train])
 
     # 3. Load Training Data
     dm = DatasetManager(cfg, parameterize=args.parameterize, features=args.features)
     model = None
     if "train" in args.stage:
         logger.info(">>> Loading Signal (Train)...")
-        d_sig_tr = dm.load_data(sig_datasets, "train", lumi=args.lumi)
-        d_sig_tr = dm.reweight_signals(d_sig_tr)  # Equalize mass points
+        d_sig_tr = dm.load_data(sig_datasets_train, "train", lumi=args.lumi)
+        d_sig_tr = dm.reweight_signals(d_sig_tr)
+
+
 
         logger.info(">>> Loading Background (Train)...")
-        d_bkg_tr = dm.load_data(bkg_datasets, "train", target_masses=target_masses, lumi=args.lumi)
-
+        d_bkg_tr = dm.load_data(
+            bkg_datasets, "train",
+            target_masses=target_masses,
+            lumi=args.lumi,
+            max_entries=args.max_bkg_entries
+        )
         # Global Balance: Sum(Bkg Weights) = Sum(Sig Weights)
         # ---- global balance: scale background to match total signal weight ----
         sig_sum = d_sig_tr["w"].sum()
@@ -412,11 +470,23 @@ def run_pipeline(args):
         # w_tr = w_tr[positive_weight_mask]
 
         if args.model == 'xgb':
+            use_gpu = os.environ.get('CUDA_VISIBLE_DEVICES') is not None
             logger.info("Training XGBoost...")
             model = xgb.XGBClassifier(
-                n_estimators=1000, learning_rate=0.05, max_depth=6,
-                early_stopping_rounds=50,
-                device= 'cuda' if os.environ.get('CUDA_VISIBLE_DEVICES') else 'cpu'
+                objective="binary:logistic",
+                eval_metric="logloss",
+                n_estimators=4000,
+                learning_rate=0.03,
+                max_depth=4,
+                min_child_weight=5,
+                subsample=0.7,
+                colsample_bytree=0.7,
+                gamma=0.0,
+                reg_lambda=2.0,
+                reg_alpha=0.0,
+                tree_method="gpu_hist" if use_gpu else "hist",
+                random_state=42,
+                early_stopping_rounds = 100
             )
             model.fit(
                 X_tr, y_tr, sample_weight=w_tr,
@@ -424,6 +494,46 @@ def run_pipeline(args):
                 verbose=100
             )
             model.save_model(out_dir / "model.json")
+            # -----------------------------
+            # Feature importance plots
+            # -----------------------------
+            try:
+                booster = model.get_booster()
+
+                # Build feature names (best effort)
+                base_names = dm.feature_names_loaded
+                if base_names is None:
+                    # fallback: f0,f1,...
+                    n_base = X_tr.shape[1] - (2 if args.parameterize else 0)
+                    base_names = [f"f{i}" for i in range(n_base)]
+                else:
+                    # apply selection if user passed --features or --features_yaml
+                    if dm.feature_indices is not None:
+                        base_names = [base_names[i] for i in dm.feature_indices]
+
+                feat_names = list(base_names)
+                if args.parameterize:
+                    feat_names += ["MX", "MY"]
+
+                booster.feature_names = feat_names
+
+                for imp_type in ["gain", "weight"]:
+                    fig, ax = plt.subplots(figsize=(10, 8))
+                    xgb.plot_importance(
+                        booster,
+                        importance_type=imp_type,
+                        max_num_features=30,
+                        show_values=False,
+                        ax=ax
+                    )
+                    ax.set_title(f"XGBoost Feature Importance ({imp_type})")
+                    fig.tight_layout()
+                    fig.savefig(out_dir / f"feature_importance_{imp_type}.png")
+                    plt.close(fig)
+
+                logger.info("Saved feature importance plots to out_dir.")
+            except Exception as e:
+                logger.warning(f"Failed to plot feature importance: {e}")
 
         elif args.model == 'tabpfn':
             if not HAS_TABPFN:
@@ -456,7 +566,7 @@ def run_pipeline(args):
                     sys.exit(1)
                 model = TabPFNClassifier(n_estimators=1,balance_probabilities=True) # TODO add evaluation check point
         logger.info(">>> Loading Test Data...")
-        d_sig_te = dm.load_data(sig_datasets, "valid", lumi=args.lumi)
+        d_sig_te = dm.load_data(sig_datasets_eval, "valid", lumi=args.lumi)
         d_bkg_te = dm.load_data(bkg_datasets, "valid", lumi=args.lumi)
         d_sig_te = dm.reweight_signals(d_sig_te)
 
@@ -515,7 +625,7 @@ def run_pipeline(args):
     if "evaluate" in args.stage:
         logger.info(">>> Evaluating Predictions...")
         # Load predictions
-        all_masses = [(d_sig.mx, d_sig.my) for d_sig in sig_datasets]
+        all_masses = [(d_sig.mx, d_sig.my) for d_sig in sig_datasets_eval]
         for mx, my in all_masses:
             if args.mX is not None and (int(mx) != int(args.mX)):
                 continue
@@ -537,7 +647,7 @@ def run_pipeline(args):
 
             nevents_by_name = {ds.category: ds.nevents if ds.category != 'signal' else 1.0 for ds in all_datasets }
             nevents_eval = np.array([nevents_by_name[p] for p in p_eval])
-            w_eval = w_eval / nevents_eval
+            # w_eval = w_eval / nevents_eval
 
             # D. Metrics
             metrics = calculate_physics_metrics(
@@ -559,6 +669,10 @@ def run_pipeline(args):
                 "auc": float(metrics['auc']),
                 "max_sic": float(metrics['max_sic']),
                 "max_sic_unc": float(metrics['max_sic_unc']),
+                "trafo_bin_sig": float(metrics["trafo_bin_sig"]),
+                "sic": metrics["sic"].tolist(),
+                "sic_unc": metrics["sic_unc"].tolist(),
+                "trafo_edge": metrics["trafo_edge"].tolist(),
                 # "fitting_time": fitting_time
             }
             logger.info(
@@ -570,7 +684,7 @@ def run_pipeline(args):
                 w_eval=w_eval,
                 p_eval=p_eval,
                 y_pred=y_pred,
-                fname = out_dir / f"score_MX-{int(mx)}_MY-{int(my)}.png"
+                fname = out_dir / f"score_uniform_binning_MX-{int(mx)}_MY-{int(my)}.png"
             )
             plot_score_overlay(
                 y_eval=y_eval,
@@ -579,7 +693,16 @@ def run_pipeline(args):
                 p_eval=p_eval,
                 bins=metrics['trafo_edge'],
                 uniform_bin_plot=True,
-                fname = out_dir / f"score_MX-{int(mx)}_MY-{int(my)}.png"
+                fname = out_dir / f"score_auto_binning_flat_MX-{int(mx)}_MY-{int(my)}.png"
+            )
+            plot_score_overlay(
+                y_eval=y_eval,
+                y_pred=y_pred,
+                w_eval=w_eval,
+                p_eval=p_eval,
+                bins=metrics['trafo_edge'],
+                uniform_bin_plot=False,
+                fname = out_dir / f"score_auto_binning_MX-{int(mx)}_MY-{int(my)}.png"
             )
 
             with open(out_dir / f"eval_metrics_MX-{int(mx)}_MY-{int(my)}.json", "w") as f:
@@ -600,14 +723,16 @@ if __name__ == "__main__":
     parser.add_argument("--features_yaml", type=str, default=None, help="YAML file specifying features to use")
     parser.add_argument("--mX", type=float, default=None)
     parser.add_argument("--mY", type=float, default=None)
-    parser.add_argument("--lumi", type=float, default=36000)
+    parser.add_argument("--lumi", type=float, default=300000)
+    parser.add_argument("--param-mx-step", type=int, default=1, help="Sparse grid step for MX in parametrized training")
+    parser.add_argument("--param-my-step", type=int, default=1, help="Sparse grid step for MY in parametrized training")
 
     # Model Config
     parser.add_argument("--model", type=str, default="xgb", choices=["xgb", "tabpfn"])
     parser.add_argument("--parameterize", action="store_true", help="Include Mass as input")
     parser.add_argument("--features", nargs="+", help="Explicit list of features to use")
     parser.add_argument("--tabpfn_limit", type=int, default=50000)
-
+    parser.add_argument("--max_bkg_entries", type=int, default=None, help="Max entries to load for training")
     # IO
     parser.add_argument("--out_dir", type=str, default="results")
     parser.add_argument("--stage", type=str, default=["train", "predict", "evaluate"], nargs="+", help="Pipeline stages to run")
