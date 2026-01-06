@@ -525,59 +525,6 @@ def run_pipeline(args):
 
     # ---- load training data ----
     dm = EveNetDatasetManager(cfg, parameterize=args.parameterize)
-
-    classifier = None
-    logger.info(">>> Loading Signal (Train)...")
-    d_sig_tr = dm.load_data(sig_datasets_train, "train", lumi=args.lumi)
-    d_sig_tr = dm.reweight_signals(d_sig_tr, logger=logger)
-
-    logger.info(">>> Loading Background (Train)...")
-    # Pass numpy if your loader expects numpy; otherwise pass torch and convert inside loader
-    d_bkg_tr = dm.load_data(bkg_datasets, "train", target_masses=target_masses.cpu().numpy(), lumi=args.lumi, max_entries=args.max_bkg_entries)
-
-    # ---- global balance: scale background to match total signal weight ----
-    sig_sum = d_sig_tr["w"].sum()
-    bkg_sum = d_bkg_tr["w"].sum()
-
-    if bkg_sum > 0:
-        num_bkg = d_bkg_tr["w"].shape[0]
-
-        d_bkg_tr["w"] = d_bkg_tr["w"] * (num_bkg / bkg_sum)
-        d_sig_tr["w"] = d_sig_tr["w"] * (num_bkg / sig_sum)
-
-    # ---- merge for training ----
-    keys_to_merge = ["x", "globals", "x_mask", "y", "w", "m", "proc"]
-    train_data = concat_ds(d_bkg_tr, d_sig_tr, keys_to_merge)
-
-    # ---- shuffle & split (torch indices for tensors, converted for proc) ----
-    N_full = train_data["y"].shape[0]
-    
-    # Create a dedicated generator with a FIXED seed for splitting
-    # This ensures Rank 0, 1, 2, 3 all generate the EXACT SAME indices
-    g_split = torch.Generator()
-    g_split.manual_seed(12345)  # Hardcoded seed for data splitting consistency
-    
-    indices = torch.randperm(N_full, generator=g_split)
-    
-    split_idx = int(N_full * 0.8)
-    train_idx = indices[:split_idx]
-    val_idx = indices[split_idx:]
-    # ---------------------------------------------
-
-    d_train = slice_data(train_data, train_idx)
-    d_val = slice_data(train_data, val_idx)
-
-    # No negative loss in training data
-    d_train["w"] = d_train["w"].abs()
-    # d_train = filter_dict(d_train, d_train["w"] > 0)
-    # ---- features ----
-    train_features = prepare_evenet_features(d_train, args.parameterize)
-    val_features = prepare_evenet_features(d_val, args.parameterize)
-
-    global_dim = train_features["globals"].shape[1]
-    if args.parameterize:
-        global_dim += train_features["params"].shape[1]
-
     # ---- feature names ----
     feature_names = {
         "x": ['energy', 'pt', 'eta', 'phi', 'isBTag', 'isLepton', 'Charge'],
@@ -585,8 +532,62 @@ def run_pipeline(args):
     }
     if args.parameterize:
         feature_names["params"] = ['feature_0', 'feature_1']
+    keys_to_merge = ["x", "globals", "x_mask", "y", "w", "m", "proc"]
 
+
+    classifier = None
     if "train" in args.stage:
+
+        logger.info(">>> Loading Signal (Train)...")
+        d_sig_tr = dm.load_data(sig_datasets_train, "train", lumi=args.lumi)
+        d_sig_tr = dm.reweight_signals(d_sig_tr, logger=logger)
+
+        logger.info(">>> Loading Background (Train)...")
+        # Pass numpy if your loader expects numpy; otherwise pass torch and convert inside loader
+        d_bkg_tr = dm.load_data(bkg_datasets, "train", target_masses=target_masses.cpu().numpy(), lumi=args.lumi, max_entries=args.max_bkg_entries)
+
+        # ---- global balance: scale background to match total signal weight ----
+        sig_sum = d_sig_tr["w"].sum()
+        bkg_sum = d_bkg_tr["w"].sum()
+
+        if bkg_sum > 0:
+            num_bkg = d_bkg_tr["w"].shape[0]
+
+            d_bkg_tr["w"] = d_bkg_tr["w"] * (num_bkg / bkg_sum)
+            d_sig_tr["w"] = d_sig_tr["w"] * (num_bkg / sig_sum)
+
+        # ---- merge for training ----
+        train_data = concat_ds(d_bkg_tr, d_sig_tr, keys_to_merge)
+
+        # ---- shuffle & split (torch indices for tensors, converted for proc) ----
+        N_full = train_data["y"].shape[0]
+
+        # Create a dedicated generator with a FIXED seed for splitting
+        # This ensures Rank 0, 1, 2, 3 all generate the EXACT SAME indices
+        g_split = torch.Generator()
+        g_split.manual_seed(12345)  # Hardcoded seed for data splitting consistency
+
+        indices = torch.randperm(N_full, generator=g_split)
+
+        split_idx = int(N_full * 0.8)
+        train_idx = indices[:split_idx]
+        val_idx = indices[split_idx:]
+        # ---------------------------------------------
+
+        d_train = slice_data(train_data, train_idx)
+        d_val = slice_data(train_data, val_idx)
+
+        # No negative loss in training data
+        d_train["w"] = d_train["w"].abs()
+        # d_train = filter_dict(d_train, d_train["w"] > 0)
+        # ---- features ----
+        train_features = prepare_evenet_features(d_train, args.parameterize)
+        val_features = prepare_evenet_features(d_val, args.parameterize)
+
+        global_dim = train_features["globals"].shape[1]
+        if args.parameterize:
+            global_dim += train_features["params"].shape[1]
+
         # ---- callbacks ----
         callbacks = []
         if args.parameterize:
@@ -748,6 +749,19 @@ def run_pipeline(args):
                 json.dump(training_log, f, indent=4)
     predict_value = None
     if "predict" in args.stage:
+        logger.info(">>> Loading Test Data...")
+        d_sig_te = dm.load_data(sig_datasets_eval, "valid", lumi=args.lumi)
+        # d_sig_te = dm.reweight_signals(d_sig_te, logger=logger)
+        d_bkg_te = dm.load_data(bkg_datasets, "valid", lumi=args.lumi)
+
+        sig_features_tmp = prepare_evenet_features(d_sig_te, args.parameterize)
+        global_dim = sig_features_tmp["globals"].shape[1]
+        if args.parameterize:
+            global_dim += sig_features_tmp["params"].shape[1]
+
+        # Unique mass points as torch [K,2]
+        unique_masses = torch.unique(d_sig_te["m"], dim=0)
+
         if classifier is None:
             classifier = EvenetLiteClassifier(
                 class_labels=["background", "signal"],
@@ -767,13 +781,6 @@ def run_pipeline(args):
         def is_rank_zero():
             return (not dist.is_available()) or (not dist.is_initialized()) or dist.get_rank() == 0
 
-        logger.info(">>> Loading Test Data...")
-        d_sig_te = dm.load_data(sig_datasets_eval, "valid", lumi=args.lumi)
-        # d_sig_te = dm.reweight_signals(d_sig_te, logger=logger)
-        d_bkg_te = dm.load_data(bkg_datasets, "valid", lumi=args.lumi)
-
-        # Unique mass points as torch [K,2]
-        unique_masses = torch.unique(d_sig_te["m"], dim=0)
 
         for i in range(unique_masses.shape[0]):
             mx = unique_masses[i, 0]

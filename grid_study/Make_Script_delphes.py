@@ -27,7 +27,7 @@ def generate_shell_scripts(args):
     # ----------------
 
     pretrain_epoch = 25 # Pretrain normally don't need large time to converge, so need less epoch to have nicer lr decay
-    scratch_epoch = 35
+    scratch_epoch = 40
     param_epoch = 40
     base_cmd_pc = (
         "shifter python3 train_pc_mva.py "
