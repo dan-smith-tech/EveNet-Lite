@@ -16,6 +16,15 @@ import time
 # --- PyTorch & EveNet Imports ---
 import torch
 import torch.distributed as dist
+import random
+
+seed = 42
+random.seed(seed)
+np.random.seed(seed)
+torch.manual_seed(seed)
+torch.cuda.manual_seed_all(seed)   # if using CUDA
+
+from evenet.network.metrics.assignment import shared_epoch_end
 
 try:
     from evenet_lite import run_evenet_lite_training, EvenetLiteClassifier
@@ -155,12 +164,39 @@ class ConfigLoader:
                 continue
 
             target = matched[0]
+
+            cutflow_json_first = target / "../cutflow.json"
+            if cutflow_json_first.exists():
+                with open(cutflow_json_first, "r") as f:
+                    cutflow = json.load(f)
+                nevents = cutflow[name].get("total", None)
+                if nevents is None:
+                    raise ValueError(f"Missing 'all' in {cutflow_json_first}")
+                nevents = float(nevents)
+                if nevents == 0.0:
+                    nevents = 1.0
+                print("Using cutflow from", cutflow_json_first)
+            else:
+                cutflow_json = target / "cutflow.json"
+                if cutflow_json.exists():
+                    with open(cutflow_json, "r") as f:
+                        cutflow = json.load(f)
+                    nevents = cutflow.get("all", None)
+                    if nevents is None:
+                        raise ValueError(f"Missing 'all' in {cutflow_json}")
+                    nevents = float(nevents)
+                    print("Using cutflow from", cutflow_json)
+                    if nevents == 0.0:
+                        nevents = 1.0
+                else:
+                    nevents = cfg.get('nEvent', 1.0)
+
             found_datasets.append(DatasetInfo(
                 name=name,
                 path=target,
                 is_signal=False,
                 xsec=cfg.get('xsec', 1.0),
-                nevents=cfg.get('nEvent', 1.0),
+                nevents=nevents,
                 category=cfg.get("name", "background")
             ))
 
@@ -169,16 +205,30 @@ class ConfigLoader:
             if "MX-" in folder.name:
                 mx, my = self.parse_mass(folder.name)
                 cutflow_json = folder / "cutflow.json"
-                if os.path.exists(cutflow_json):
-                    with open(cutflow_json, "r") as f:
+                cutflow_json_first = folder / "../cutflow.json"
+                if cutflow_json_first.exists():
+                    with open(cutflow_json_first, "r") as f:
                         cutflow = json.load(f)
-                        nevents = cutflow.get("all", None)
-                        print("nevents from cutflow", nevents)
-
-                        if nevents is None:
-                            raise ValueError(f"Cutflow 'all' key not found in {cutflow_json}")
+                    nevents = cutflow[folder.name].get("total", None)
+                    if nevents is None:
+                        raise ValueError(f"Missing 'all' in {cutflow_json_first}")
+                    nevents = float(nevents)
+                    if nevents == 0.0:
+                        nevents = 1.0
+                    print("Using cutflow from", cutflow_json_first)
                 else:
-                    nevents = 184000
+                    cutflow_json = folder / "cutflow.json"
+                    if cutflow_json.exists():
+                        with open(cutflow_json, "r") as f:
+                            cutflow = json.load(f)
+                        nevents = cutflow.get("all", None)
+                        if nevents is None:
+                            raise ValueError(f"Missing 'all' in {cutflow_json}")
+                        nevents = float(nevents)
+                        if nevents == 0.0:
+                            nevents = 1.0
+                    else:
+                        nevents = 184000.0
                 found_datasets.append(DatasetInfo(
                     name=folder.name,
                     path=folder,
@@ -231,7 +281,7 @@ class EveNetDatasetManager:
 
         for ds in datasets:
             search_path = ds.path / "evenet" / split
-            files = list(search_path.glob("*.pt"))
+            files = sorted(list(search_path.glob("*.pt")))
             if not files:
                 continue
             for fp in files:
@@ -427,6 +477,10 @@ def run_pipeline(args):
     out_dir.mkdir(parents=True, exist_ok=True)
     ckpt_dir = out_dir / "checkpoints"
     ckpt_dir.mkdir(exist_ok=True)
+    if args.continue_training:
+        ckpt_old_dir = out_dir / "checkpoints_old"
+        ckpt_old_dir.mkdir(exist_ok=True)
+        os.system(f"cp {ckpt_dir}/*.pt {ckpt_old_dir}/.")
 
     if args.in_dir is not None:
         load_dir = Path(args.in_dir) / model_str / mode_str / mass_target
@@ -465,7 +519,7 @@ def run_pipeline(args):
     target_masses = torch.tensor(
         [[float(d.mx), float(d.my)] for d in all_datasets if d.is_signal],
         dtype=torch.float32
-    )
+    ) # doesn't matter because we will do signal mass dynamic sampling in the trainer
 
     # ---- load training data ----
     dm = EveNetDatasetManager(cfg, parameterize=args.parameterize)
@@ -495,10 +549,18 @@ def run_pipeline(args):
 
     # ---- shuffle & split (torch indices for tensors, converted for proc) ----
     N_full = train_data["y"].shape[0]
-    indices = torch.randperm(N_full)
+    
+    # Create a dedicated generator with a FIXED seed for splitting
+    # This ensures Rank 0, 1, 2, 3 all generate the EXACT SAME indices
+    g_split = torch.Generator()
+    g_split.manual_seed(12345)  # Hardcoded seed for data splitting consistency
+    
+    indices = torch.randperm(N_full, generator=g_split)
+    
     split_idx = int(N_full * 0.8)
     train_idx = indices[:split_idx]
     val_idx = indices[split_idx:]
+    # ---------------------------------------------
 
     d_train = slice_data(train_data, train_idx)
     d_val = slice_data(train_data, val_idx)
@@ -580,12 +642,14 @@ def run_pipeline(args):
         learning_rate = args.learning_rate if hasattr(args, 'learning_rate') else 1e-3
 
         body_frozen_factor = 0.1 if args.freeze_type == "partial" else 0.0 if args.freeze_type == "all" else 1.0
+        if args.use_adapter:
+            body_frozen_factor = 0.3
         mediate_frozen_factor = 0.3 if args.freeze_type == "partial" else 0.1 if args.freeze_type == "all" else 1.0
         learning_rates = [learning_rate] if not args.pretrain else [body_frozen_factor * learning_rate, mediate_frozen_factor * learning_rate,
                                                                     learning_rate]
 
         module_lists = [["Classification", "ObjectEncoder", "PET", "GlobalEmbedding"]] if not args.pretrain else [
-            ["PET"], ["ObjectEncoder", "GlobalEmbedding"], ["Classification"]]
+            ["PET"], ["ObjectEncoder"], ["GlobalEmbedding", "Classification"]]
 
         learning_rates_new = []
         module_lists_new = []
@@ -603,13 +667,25 @@ def run_pipeline(args):
 
 
         print("learning for each module:", learning_rates, module_lists)
-        weight_decay = [1e-4 for x in learning_rates]
+        weight_decay = [1e-2  for x in learning_rates]
+        if args.pretrain:
+            weight_decay[0] = 1e-4 # Do not let weight decay to kill pretrain weight
+            weight_decay[1] = 1e-4 # Do not let weight decay to kill pretrain weight
         # ---- train ----
         world_size = int(os.environ.get("WORLD_SIZE", "1"))
         local_rank = int(os.environ.get("LOCAL_RANK", "0"))
         if world_size > 1 and torch.cuda.is_available():
             torch.cuda.set_device(local_rank)
         logger.info(f">>> Starting EveNet Training on GPU: {local_rank} [of World: {world_size}]")
+
+        best_ckpt = None
+        if args.continue_training:
+            # load lastest checkpoint from ckpt_dir
+            ckpt_files = list(ckpt_dir.glob("*.pt"))
+            if not ckpt_files:
+                logger.error(f"No checkpoints found in {ckpt_dir} for prediction!")
+                raise SystemExit(1)
+            best_ckpt = max(ckpt_files, key=os.path.getctime)
 
         start_time = time.time()
         classifier = run_evenet_lite_training(
@@ -631,6 +707,7 @@ def run_pipeline(args):
             sampler=args.sampler,
 
             checkpoint_path=str(ckpt_dir),
+            resume_from=best_ckpt,
             save_top_k=1,
             monitor_metric="val_loss",
             sic_min_bkg_events=10,
@@ -639,7 +716,7 @@ def run_pipeline(args):
             use_wandb=True,
             wandb={
                 'project': 'EveNet-GridSearch',
-                'name': f"{model_str}-{mode_str}-{mass_target}{'-test' if args.wandb_test else ''}",
+                'name': f"{model_str}-{mode_str}-{mass_target}{'-test' if args.wandb_test else ''}{args.wandb_tag}",
                 'entity': "ytchou97-university-of-washington",
                 'dir': "/pscratch/sd/t/tihsu/tmp/wandb"
             },
@@ -649,7 +726,7 @@ def run_pipeline(args):
             module_lists=module_lists,
             lr=learning_rates,
             weight_decay=weight_decay,
-            early_stop_patience=3,
+            early_stop_patience=args.early_stop,
             n_ensemble=args.ensemble,
             loss_gamma=args.gamma,
             use_adapter=args.use_adapter,
@@ -874,11 +951,13 @@ if __name__ == "__main__":
     # IO
     parser.add_argument("--out_dir", type=str, default="results")
     parser.add_argument("--in_dir", type=str, default=None, help="input directory that differs from out_dir")
+    parser.add_argument("--wandb_tag", type=str, default="")
     parser.add_argument("--pretrain", action="store_true", help="Use pretrained model weights")
     parser.add_argument("--learning_rate", type=float, default=1e-3, help="Learning rate for training")
     parser.add_argument("--param-mx-step", type=int, default=1)
     parser.add_argument("--param-my-step", type=int, default=1)
     parser.add_argument("--lumi", type=float, default=300000)
+    parser.add_argument("--early_stop", type=int, default=5)
 
     parser.add_argument("--ensemble", type=int, default=1, help="Number of ensemble models to train")
     parser.add_argument("--gamma", type=float, default=0.0, help="gamma for focal loss" )
@@ -890,7 +969,7 @@ if __name__ == "__main__":
     # logging
     parser.add_argument("--wandb_test", action="store_true")
     parser.add_argument("--use_adapter", action="store_true")
-
+    parser.add_argument("--continue_training", action="store_true")
     args = parser.parse_args()
 
     if not args.parameterize and (args.mX is None or args.mY is None):

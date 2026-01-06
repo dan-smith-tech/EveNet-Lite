@@ -30,6 +30,8 @@ except Exception:
 
 
 # --- Add these OUTSIDE your class, near imports ---
+def cutflow_factory():
+    return processor.defaultdict_accumulator(int)
 
 def nested_dict_int():
     """Helper to replace lambda: collections.defaultdict(int)"""
@@ -184,6 +186,10 @@ class FullLogicProcessor(processor.ProcessorABC):
         leptons = ak.concatenate([good_ele, good_mu], axis=1)
         # Sort by pT for standard selection logic
         leptons = leptons[ak.argsort(leptons.pt, axis=1, ascending=False)]
+        lep_q0 = ak.firsts(leptons.charge)  # shape: (nEvents,), empty -> None
+        tau_q0 = ak.firsts(good_tau.charge)  # shape: (nEvents,), empty -> None
+
+        opposite_sign = ak.fill_none((lep_q0 * tau_q0) < 0, False)
 
         # --- 2. Event Selection ---
         selection = PackedSelection()
@@ -191,7 +197,8 @@ class FullLogicProcessor(processor.ProcessorABC):
         selection.add("one_tau", ak.num(good_tau) == 1)
         selection.add("two_jets", ak.num(good_jet) >= 2)
         selection.add("one_bjets", ak.num(good_bjet) >= 1)
-        cut = selection.all("one_lep", "one_tau", "two_jets", "one_bjets")
+        selection.add("opposite_sign", opposite_sign)
+        cut = selection.all("one_lep", "one_tau", "two_jets", "one_bjets", "opposite_sign")
 
         sel_ev = events[cut]
         if len(sel_ev) == 0: return {
@@ -309,7 +316,7 @@ class FullLogicProcessor(processor.ProcessorABC):
             "eta": ak.fill_none(padded.eta, 0.0),
             "phi": ak.fill_none(padded.phi, 0.0),
             "E": ak.fill_none(padded.E, 0.0)
-        }, with_name="PtEtaPhiELorentzVector")\
+        }, with_name="PtEtaPhiELorentzVector")
 
         is_lepton_padded = ak.fill_none(padded.isLepton, 0.0)
         is_btag_padded = ak.fill_none(padded.btag, 0.0)
@@ -335,6 +342,10 @@ class FullLogicProcessor(processor.ProcessorABC):
         g_Mall = calc_mass(ak.mask(pad_p4, valid_mask))  # Sum all valid
         g_Mlep = calc_mass(ak.mask(pad_p4, is_lep_mask))
         g_Mbjet = calc_mass(ak.mask(pad_p4, is_bjet_mask))
+
+        g_Mall = np.where(g_Mall > 0.0, g_Mall, 0.0)
+        g_Mlep = np.where(g_Mlep > 0.0, g_Mlep, 0.0)
+        g_Mbjet = np.where(g_Mbjet > 0.0, g_Mbjet, 0.0)
 
         g_np = np.stack([
             g_met, g_met_phi, g_nLep, g_nbJet, g_nJet,
@@ -555,6 +566,20 @@ def main():
         eff = 100 * passed / total if total > 0 else 0
         print(f"{dataset:<20} | {total:<10} | {passed:<10} | {eff:<10.2f}")
 
+    # --- Save Cutflow JSON ---
+    outdir = Path(args.outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    cutflow_out = {
+        ds: {k: int(v) for k, v in counts.items()}
+        for ds, counts in output["cutflow"].items()
+    }
+
+    cutflow_path = outdir / "cutflow.json"
+    with open(cutflow_path, "w") as f:
+        json.dump(cutflow_out, f, indent=2, sort_keys=True)
+
+    print(f"\nCutflow saved to: {cutflow_path}")
 
     # --- Save DQM (NPZ + Plots) ---
     dqm_dir = Path(args.outdir) / "dqm_summary"

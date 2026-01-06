@@ -24,7 +24,7 @@ def plot_score_overlay(y_eval, y_pred, w_eval, p_eval, bins=None, fname=None, un
         if np.sum(mask_proc) > 0:
             bkg_data.append(y_pred[mask_proc])
             bkg_weights.append(w_eval[mask_proc])
-            bkg_labels.append(proc)
+            bkg_labels.append(f"{proc}[{np.sum(w_eval[mask_proc]):.0f}]")
 
     plt.figure(figsize=(10, 7))
 

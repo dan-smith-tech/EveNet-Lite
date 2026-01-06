@@ -105,12 +105,39 @@ class ConfigLoader:
 
             # Assume strict 1-to-1 match for background definitions in YAML
             target = matched[0]
+            cutflow_json_first = target / "../cutflow.json"
+            if cutflow_json_first.exists():
+                with open(cutflow_json_first, "r") as f:
+                    cutflow = json.load(f)
+                nevents = cutflow[name].get("total", None)
+                if nevents is None:
+                    raise ValueError(f"Missing 'all' in {cutflow_json_first}")
+                nevents = float(nevents)
+                if nevents == 0.0:
+                    nevents = 1.0
+                print("Using cutflow from", cutflow_json_first)
+            else:
+                cutflow_json = target / "cutflow.json"
+                if cutflow_json.exists():
+                    with open(cutflow_json, "r") as f:
+                        cutflow = json.load(f)
+                    nevents = cutflow.get("all", None)
+                    if nevents is None:
+                        raise ValueError(f"Missing 'all' in {cutflow_json}")
+                    nevents = float(nevents)
+                    print("Using cutflow from", cutflow_json)
+                    if nevents == 0.0:
+                        nevents = 1.0
+                else:
+                    nevents = cfg.get('nEvent', 1.0)
+
+
             found_datasets.append(DatasetInfo(
                 name=name,
                 path=target,
                 is_signal=False,
                 xsec=cfg.get('xsec', 1.0),
-                nevents=cfg.get('nEvent', 1.0),
+                nevents=nevents,
                 category=cfg.get("name", "background")
             ))
 
@@ -124,16 +151,30 @@ class ConfigLoader:
                 # mx_range = self.signal_config.get('mx', [0, 99999])
                 # if not (mx_range[0] <= mx <= mx_range[1]): continue
 
-                cutflow_json = folder / "cutflow.json"
-                if os.path.exists(cutflow_json):
-                    print("nevents from cutflow")
-                    with open(cutflow_json, "r") as f:
+                cutflow_json_first = folder / "../cutflow.json"
+                if cutflow_json_first.exists():
+                    with open(cutflow_json_first, "r") as f:
                         cutflow = json.load(f)
+                    nevents = cutflow[folder.name].get("total", None)
+                    if nevents is None:
+                        raise ValueError(f"Missing 'all' in {cutflow_json_first}")
+                    nevents = float(nevents)
+                    if nevents == 0.0:
+                        nevents = 1.0
+                    print("Using cutflow from", cutflow_json_first)
+                else:
+                    cutflow_json = folder / "cutflow.json"
+                    if cutflow_json.exists():
+                        with open(cutflow_json, "r") as f:
+                            cutflow = json.load(f)
                         nevents = cutflow.get("all", None)
                         if nevents is None:
-                            raise ValueError(f"Cutflow 'all' key not found in {cutflow_json}")
-                else:
-                    nevents = 184000
+                            raise ValueError(f"Missing 'all' in {cutflow_json}")
+                        nevents = float(nevents)
+                        if nevents == 0.0:
+                            nevents = 1.0
+                    else:
+                        nevents = 184000.0
 
                 found_datasets.append(DatasetInfo(
                     name=folder.name,
@@ -541,7 +582,7 @@ def run_pipeline(args):
                 sys.exit(1)
             logger.info("Training TabPFN...")
             X_sub, y_sub, _ = dm.downsample_for_tabpfn(X_tr, y_tr, w_tr, limit=args.tabpfn_limit)
-            model = TabPFNClassifier(n_estimators=1,balance_probabilities=True) #'cuda' if os.environ.get('CUDA_VISIBLE_DEVICES') else 'cpu')
+            model = TabPFNClassifier(balance_probabilities=True) #'cuda' if os.environ.get('CUDA_VISIBLE_DEVICES') else 'cpu')
             print("cuda:", os.environ.get('CUDA_VISIBLE_DEVICES'))
             model.fit(X_sub, y_sub)
 
@@ -551,7 +592,7 @@ def run_pipeline(args):
         # =========================================================
         # [INSERT 1] Plot Overtraining Check (Right after training)
         # =========================================================
-        plot_overtraining(model, X_tr, y_tr, w_tr, X_val, y_val, w_val, out_dir)
+        # plot_overtraining(model, X_tr, y_tr, w_tr, X_val, y_val, w_val, out_dir)
 
     if "predict" in args.stage:
         # 5. Inference (Evaluation)
@@ -564,11 +605,11 @@ def run_pipeline(args):
                 if not HAS_TABPFN:
                     logger.error("TabPFN requested but not installed.")
                     sys.exit(1)
-                model = TabPFNClassifier(n_estimators=1,balance_probabilities=True) # TODO add evaluation check point
+                model = TabPFNClassifier(balance_probabilities=True) # TODO add evaluation check point
         logger.info(">>> Loading Test Data...")
         d_sig_te = dm.load_data(sig_datasets_eval, "valid", lumi=args.lumi)
         d_bkg_te = dm.load_data(bkg_datasets, "valid", lumi=args.lumi)
-        d_sig_te = dm.reweight_signals(d_sig_te)
+        # d_sig_te = dm.reweight_signals(d_sig_te)
 
         # Prepare for parametrized inference loop
         unique_masses = np.unique(d_sig_te['m'], axis=0)

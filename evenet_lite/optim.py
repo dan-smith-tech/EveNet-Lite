@@ -27,30 +27,30 @@ def _get_by_path(root: torch.nn.Module, path: str) -> torch.nn.Module | None:
     return cur if isinstance(cur, torch.nn.Module) else None
 
 def set_peft_trainable(model: torch.nn.Module, train_layernorm: bool = True):
-    if model.ensemble_mode == "independent":
-        for model_element in  model.models:
+    root = unwrap_model(model)
+    if getattr(root, "ensemble_mode", None) == "independent":
+        for model_element in root.models:
             m = unwrap_model(model_element)
+
             # 1) freeze all
             for p in m.backbone.parameters():
                 p.requires_grad_(False)
 
             # 2) unfreeze adapters + head
             for name, p in m.backbone.named_parameters():
-                if ("adapters" in name):
-                    p.requires_grad_(True)
-                if ("GlobalEmbedding" in name):
-                    p.requires_grad_(True)
-                if ("ObjectEncoder" in name):
+                if ("adapters" in name) or ("GlobalEmbedding" in name) or ("ObjectEncoder" in name):
                     p.requires_grad_(True)
 
-            # 3) optional: unfreeze LayerNorm (很常有幫助)
+            # 3) optional: unfreeze LayerNorm
             if train_layernorm:
                 for mod in m.backbone.modules():
                     if isinstance(mod, torch.nn.LayerNorm):
                         for p in mod.parameters():
                             p.requires_grad_(True)
+
     else:
-        m = unwrap_model(model)
+        m = root
+
         # 1) freeze all
         for p in m.backbone.parameters():
             p.requires_grad_(False)
@@ -60,12 +60,13 @@ def set_peft_trainable(model: torch.nn.Module, train_layernorm: bool = True):
             if ("adapters" in name) or ("GlobalEmbedding" in name) or ("ObjectEncoder" in name):
                 p.requires_grad_(True)
 
-        # 3) optional: unfreeze LayerNorm (很常有幫助)
+        # 3) optional: unfreeze LayerNorm
         if train_layernorm:
             for mod in m.backbone.modules():
                 if isinstance(mod, torch.nn.LayerNorm):
                     for p in mod.parameters():
                         p.requires_grad_(True)
+
 
 def print_trainable(model):
     m = unwrap_model(model)
