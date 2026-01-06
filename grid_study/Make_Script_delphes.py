@@ -25,14 +25,18 @@ def parse_args():
 def generate_shell_scripts(args):
     # 1. Configuration
     # ----------------
+
+    pretrain_epoch = 25 # Pretrain normally don't need large time to converge, so need less epoch to have nicer lr decay
+    scratch_epoch = 35
+    param_epoch = 40
     base_cmd_pc = (
         "shifter python3 train_pc_mva.py "
         "--base_dir /global/cfs/cdirs/m2616/avencast/Event_Level_Analysis/data/Grid_Study "
         "--yaml_path config/sample_delphes.yaml "
         "--mX {mX} --mY {mY} "
-        "--epochs 30 --batch_size 2048 "
+        "--batch_size 2048 "
         "--out_dir /pscratch/sd/t/tihsu/database/GridStudy_delphes/method/ "
-        " --gamma 0.5 "
+        " --gamma 0.5 --learning_rate 0.0005 "
     )
 
     base_cmd_xgb = (
@@ -110,10 +114,10 @@ def generate_shell_scripts(args):
 
                 # --- Write Commands ---
                 # 1. Scratch
-                files[f"scratch_{mode}"].write(base_cmd_pc.format(mX=mX, mY=mY) + f" --stage {mode}\n")
+                files[f"scratch_{mode}"].write(base_cmd_pc.format(mX=mX, mY=mY) + f" --stage {mode} --epochs {scratch_epoch}\n")
 
                 # 2. Pretrain
-                files[f"pretrain_{mode}"].write(base_cmd_pc.format(mX=mX, mY=mY) + f" --pretrain --stage {mode}\n")
+                files[f"pretrain_{mode}"].write(base_cmd_pc.format(mX=mX, mY=mY) + f" --pretrain --stage {mode} --epochs {pretrain_epoch}\n")
 
                 # 3. XGBoost
                 files[f"xgboost_{mode}"].write(base_cmd_xgb.format(mX=mX, mY=mY) + f" --stage {mode} \n")
@@ -124,16 +128,15 @@ def generate_shell_scripts(args):
                 count += 1
 
     with open(os.path.join(farm_dir, f"run_param_train_pretrain.sh"), "w") as f:
-        for num_sparse in [1, 2, 3, 4]:
+        for num_sparse in [1, 2]:
         # train
             mX = 500 # deosn't matter
             mY = 90 # deosn't matter
-            cmd = (base_cmd_pc.format(mX=mX, mY=mY) + f" --stage train --parameterize  --pretrain  --param-mx-step {num_sparse} --param-my-step {num_sparse} ")
-            cmd = cmd.replace("--epochs 20", "--epochs 40")
+            cmd = (base_cmd_pc.format(mX=mX, mY=mY) + f" --stage train --parameterize  --pretrain  --param-mx-step {num_sparse} --param-my-step {num_sparse} --epochs {param_epoch} ")
             f.write(f'bash -c "source ../NERSC/export_DDP_vars.sh && {cmd}"\n')
     with open(os.path.join(farm_dir, f"run_param_predict_pretrain.sh"), "w") as f:
         # predict, eval
-        for num_sparse in [1, 2, 3, 4]:
+        for num_sparse in [1, 2]:
             for key in keys:
                 match = pattern.search(key)
                 if match:
@@ -143,7 +146,7 @@ def generate_shell_scripts(args):
 
     with open(os.path.join(farm_dir, f"run_param_evaluate_pretrain.sh"), "w") as f:
         # predict, eval
-        for num_sparse in [1, 2, 3, 4]:
+        for num_sparse in [1, 2]:
             for key in keys:
                 match = pattern.search(key)
                 if match:
@@ -152,16 +155,16 @@ def generate_shell_scripts(args):
                     f.write(base_cmd_pc.format(mX=mX, mY=mY) + f" --stage evaluate --parameterize --pretrain --param-mx-step {num_sparse} --param-my-step {num_sparse}\n")
 
     with open(os.path.join(farm_dir, f"run_param_train_scratch.sh"), "w") as f:
-        for num_sparse in [1, 2, 3, 4]:
+        for num_sparse in [1, 2]:
             # train
             mX = 500  # deosn't matter
             mY = 90  # deosn't matter
-            cmd = (base_cmd_pc.format(mX=mX, mY=mY) + f" --stage train --parameterize --param-mx-step {num_sparse} --param-my-step {num_sparse}")
+            cmd = (base_cmd_pc.format(mX=mX, mY=mY) + f" --stage train --parameterize --param-mx-step {num_sparse} --param-my-step {num_sparse} --epochs {param_epoch} ")
             cmd = cmd.replace("--epochs 20", "--epochs 40")
             f.write(f'bash -c "source ../NERSC/export_DDP_vars.sh && {cmd}"\n')
     with open(os.path.join(farm_dir, f"run_param_predict_scratch.sh"), "w") as f:
         # predict, eval
-        for num_sparse in [1, 2, 3, 4]:
+        for num_sparse in [1, 2]:
             for key in keys:
                 match = pattern.search(key)
                 if match:
@@ -171,7 +174,7 @@ def generate_shell_scripts(args):
 
     with open(os.path.join(farm_dir, f"run_param_evaluate_scratch.sh"), "w") as f:
         # predict, eval
-        for num_sparse in [1, 2, 3, 4]:
+        for num_sparse in [1, 2]:
             for key in keys:
                 match = pattern.search(key)
                 if match:

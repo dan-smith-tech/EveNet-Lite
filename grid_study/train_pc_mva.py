@@ -501,6 +501,8 @@ def run_pipeline(args):
             mx_filtered = mx_sorted[::args.param_mx_step]
             my_filtered = my_sorted[::args.param_my_step]
             sig_datasets_eval = [d for d in all_datasets if d.is_signal]
+            if args.mX is not None and args.mY is not None:
+                sig_datasets_eval = [d for d in sig_datasets_eval if d.mx == args.mX and d.my == args.mY]
             sig_datasets_train = [d for d in all_datasets if
                                   d.is_signal and d.mx in mx_filtered and d.my in my_filtered]
         else:
