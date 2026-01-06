@@ -737,6 +737,13 @@ def run_pipeline(args):
         fitting_time = end_time - start_time
         logger.info(f"Training completed in {fitting_time / 60:.2f} minutes.")
 
+        if (not dist.is_available()) or ((not dist.is_initialized()) or dist.get_rank() == 0):
+            training_log = {
+                "time": fitting_time,
+                **vars(args)
+            }
+            with open(out_dir / f"training_log.json", "w") as f:
+                json.dump(training_log, f, indent=4)
     predict_value = None
     if "predict" in args.stage:
         if classifier is None:
