@@ -4,17 +4,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "evenet-lite"
-version = "0.2.0"
+version = "0.3.0"
 description = "Lightweight training and inference package built on top of evenet-core."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "EveNet contributors" }]
 dependencies = [
-  "evenet-core>=0.1.0",
+  "evenet-core>=0.3.0",
   "huggingface-hub>=0.24",
   "matplotlib>=3.7",
-  "numpy>=1.24",
+  "numpy==1.26.4",
   "pyyaml>=6.0",
   "scipy>=1.10",
   "torch>=2.1",
