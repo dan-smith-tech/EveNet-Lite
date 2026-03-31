@@ -103,7 +103,16 @@ class EveNetBackbone(nn.Module):
             layer_scale_init=pet_config.layer_scale_init,
             dropout=pet_config.dropout,
             mode=pet_config.mode,
-            use_adapter=use_adapter
+            use_adapter=use_adapter,
+            use_moe=pet_config.use_moe,
+            moe_base_num_experts=pet_config.moe_base_num_experts,
+            moe_base_select_top_k=pet_config.moe_base_select_top_k,
+            moe_num_shared_experts=pet_config.moe_num_shared_experts,
+            moe_expert_segmentation_factor=pet_config.moe_expert_segmentation_factor,
+            moe_scale_expert_dim=pet_config.moe_scale_expert_dim,
+            moe_alpha=pet_config.moe_alpha,
+            moe_cz=pet_config.moe_cz,
+            moe_use_router_noise=pet_config.moe_use_router_noise,
         )
 
         # [3] Classification + Regression + Assignment Body
