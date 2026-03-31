@@ -48,6 +48,13 @@ def set_peft_trainable(model: torch.nn.Module, train_layernorm: bool = True):
                         for p in mod.parameters():
                             p.requires_grad_(True)
 
+            # 4) explicitly keep MoE params frozen (gate router and expert FFNs
+            #    are pre-trained weights that must not be updated during adapter
+            #    fine-tuning, even if LayerNorms were unselectively unfrozen above)
+            for name, p in m.backbone.named_parameters():
+                if any(seg in name for seg in ("mlp.gate", "mlp.routed_experts", "mlp.shared_experts")):
+                    p.requires_grad_(False)
+
     else:
         m = root
 
@@ -66,6 +73,13 @@ def set_peft_trainable(model: torch.nn.Module, train_layernorm: bool = True):
                 if isinstance(mod, torch.nn.LayerNorm):
                     for p in mod.parameters():
                         p.requires_grad_(True)
+
+        # 4) explicitly keep MoE params frozen (gate router and expert FFNs
+        #    are pre-trained weights that must not be updated during adapter
+        #    fine-tuning, even if LayerNorms were unselectively unfrozen above)
+        for name, p in m.backbone.named_parameters():
+            if any(seg in name for seg in ("mlp.gate", "mlp.routed_experts", "mlp.shared_experts")):
+                p.requires_grad_(False)
 
 
 def print_trainable(model):
