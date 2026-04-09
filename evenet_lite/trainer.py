@@ -101,8 +101,6 @@ class TrainerConfig:
     early_stop_patience: int = 0
     find_unused_parameters: bool = True
     use_peft: bool = False  # new field to indicate whether to use PEFT
-    moe_aux_loss_alpha: float = 0.01   # weight for MoE load-balancing loss (L_aux)
-    moe_cz_loss_alpha: float = 0.001  # weight for MoE z-loss (cz_Lz)
 
 
 class Trainer:
@@ -490,10 +488,8 @@ class Trainer:
             elif self.is_rank_zero():
                 logging.info(
                     "Full fine-tuning active: all parameters trainable (including MoE). "
-                    "MoE auxiliary losses will be added to training loss "
-                    "(L_aux alpha=%.4f, cz_Lz alpha=%.4f)",
-                    getattr(self.config, "moe_aux_loss_alpha", 0.01),
-                    getattr(self.config, "moe_cz_loss_alpha", 0.001),
+                    "MoE auxiliary losses (L_aux, cz_Lz) will be added directly to training loss "
+                    "(scaling is controlled by moe_alpha/moe_cz in the network YAML config)",
                 )
 
             self._setup_optimizers_and_schedulers(epochs, steps_per_epoch)
@@ -962,22 +958,14 @@ class Trainer:
                     m = self._unwrap_model()
                     raw_l_aux = getattr(m, "moe_l_aux", None)
                     raw_cz_lz = getattr(m, "moe_cz_lz", None)
-                    moe_alpha = getattr(self.config, "moe_aux_loss_alpha", 0.01)
-                    moe_cz_alpha = getattr(self.config, "moe_cz_loss_alpha", 0.001)
                     if raw_l_aux is not None and torch.isfinite(raw_l_aux):
-                        loss = loss + moe_alpha * raw_l_aux
+                        loss = loss + raw_l_aux
                         moe_l_aux_val = raw_l_aux.item()
-                        logging.debug(
-                            "[Rank %d] batch %d  L_aux=%.6f  (weighted: %.6f)",
-                            self.rank, batch_idx, moe_l_aux_val, moe_alpha * moe_l_aux_val,
-                        )
-                    if raw_cz_lz is not None and moe_cz_alpha > 0 and torch.isfinite(raw_cz_lz):
-                        loss = loss + moe_cz_alpha * raw_cz_lz
+                        logging.debug("[Rank %d] batch %d  L_aux=%.6f", self.rank, batch_idx, moe_l_aux_val)
+                    if raw_cz_lz is not None and torch.isfinite(raw_cz_lz):
+                        loss = loss + raw_cz_lz
                         moe_cz_lz_val = raw_cz_lz.item()
-                        logging.debug(
-                            "[Rank %d] batch %d  cz_Lz=%.6f  (weighted: %.6f)",
-                            self.rank, batch_idx, moe_cz_lz_val, moe_cz_alpha * moe_cz_lz_val,
-                        )
+                        logging.debug("[Rank %d] batch %d  cz_Lz=%.6f", self.rank, batch_idx, moe_cz_lz_val)
 
                 if training:
                     optimizers = self.optimizers or ([self.optimizer] if self.optimizer else [])
@@ -1073,14 +1061,8 @@ class Trainer:
                 if metric_count["moe_cz_lz"] > 0 else 0.0
             )
             logging.info(
-                "  [MoE aux losses]  L_aux=%.6f (alpha=%.4f, contribution=%.6f)  "
-                "cz_Lz=%.6f (alpha=%.4f, contribution=%.6f)",
-                avg_l_aux,
-                getattr(self.config, "moe_aux_loss_alpha", 0.01),
-                getattr(self.config, "moe_aux_loss_alpha", 0.01) * avg_l_aux,
-                avg_cz_lz,
-                getattr(self.config, "moe_cz_loss_alpha", 0.001),
-                getattr(self.config, "moe_cz_loss_alpha", 0.001) * avg_cz_lz,
+                "  [MoE aux losses]  L_aux=%.6f  cz_Lz=%.6f",
+                avg_l_aux, avg_cz_lz,
             )
             metrics["moe_l_aux"] = avg_l_aux
             metrics["moe_cz_lz"] = avg_cz_lz
