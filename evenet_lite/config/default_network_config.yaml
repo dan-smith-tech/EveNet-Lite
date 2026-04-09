@@ -39,7 +39,7 @@ Body:
     moe_base_select_top_k: 1
     moe_num_shared_experts: 1
     moe_scale_expert_dim: true
-    moe_alpha: 0.01
+    moe_alpha: 0.1
     moe_cz: 0.001
     moe_use_router_noise: true
 

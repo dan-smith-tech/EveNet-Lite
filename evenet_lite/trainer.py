@@ -101,6 +101,8 @@ class TrainerConfig:
     early_stop_patience: int = 0
     find_unused_parameters: bool = True
     use_peft: bool = False  # new field to indicate whether to use PEFT
+    moe_aux_loss_alpha: float = 0.01   # weight for MoE load-balancing loss (L_aux)
+    moe_cz_loss_alpha: float = 0.001  # weight for MoE z-loss (cz_Lz)
 
 
 class Trainer:
@@ -484,6 +486,15 @@ class Trainer:
                 set_peft_trainable(self.model, train_layernorm=True)
                 if self.is_rank_zero():
                     print_trainable(self.model)
+                    logging.info("Adapter fine-tuning active: PET/MoE weights frozen, only adapters+head+LayerNorm trainable")
+            elif self.is_rank_zero():
+                logging.info(
+                    "Full fine-tuning active: all parameters trainable (including MoE). "
+                    "MoE auxiliary losses will be added to training loss "
+                    "(L_aux alpha=%.4f, cz_Lz alpha=%.4f)",
+                    getattr(self.config, "moe_aux_loss_alpha", 0.01),
+                    getattr(self.config, "moe_cz_loss_alpha", 0.001),
+                )
 
             self._setup_optimizers_and_schedulers(epochs, steps_per_epoch)
 
@@ -890,8 +901,8 @@ class Trainer:
         #     model.eval()
         self._set_model_mode(model, training)
 
-        metric_sum: Dict[str, float] = {"loss": 0.0, "accuracy": 0.0}
-        metric_count: Dict[str, int] = {"loss": 0, "accuracy": 0}
+        metric_sum: Dict[str, float] = {"loss": 0.0, "accuracy": 0.0, "moe_l_aux": 0.0, "moe_cz_lz": 0.0}
+        metric_count: Dict[str, int] = {"loss": 0, "accuracy": 0, "moe_l_aux": 0, "moe_cz_lz": 0}
         epoch_probs: List[torch.Tensor] = []
         epoch_targets: List[torch.Tensor] = []
         epoch_weights: List[torch.Tensor] = []
@@ -940,7 +951,34 @@ class Trainer:
 
                 weighted_sampler = isinstance(loader.sampler, DistributedWeightedSampler)
                 weight_tensor_input = weight_tensor if not weighted_sampler else torch.ones_like(weight_tensor)
-                loss = compute_loss(outputs, targets, weight_tensor_input, gamma=self.config.loss_gamma)
+                ce_loss = compute_loss(outputs, targets, weight_tensor_input, gamma=self.config.loss_gamma)
+                loss = ce_loss
+
+                # Incorporate MoE auxiliary losses during full fine-tuning (no adapter).
+                # When use_peft=True the MoE weights are frozen, so the aux loss is irrelevant there.
+                moe_l_aux_val = 0.0
+                moe_cz_lz_val = 0.0
+                if training and not getattr(self.config, "use_peft", False):
+                    m = self._unwrap_model()
+                    raw_l_aux = getattr(m, "moe_l_aux", None)
+                    raw_cz_lz = getattr(m, "moe_cz_lz", None)
+                    moe_alpha = getattr(self.config, "moe_aux_loss_alpha", 0.01)
+                    moe_cz_alpha = getattr(self.config, "moe_cz_loss_alpha", 0.001)
+                    if raw_l_aux is not None and torch.isfinite(raw_l_aux):
+                        loss = loss + moe_alpha * raw_l_aux
+                        moe_l_aux_val = raw_l_aux.item()
+                        logging.debug(
+                            "[Rank %d] batch %d  L_aux=%.6f  (weighted: %.6f)",
+                            self.rank, batch_idx, moe_l_aux_val, moe_alpha * moe_l_aux_val,
+                        )
+                    if raw_cz_lz is not None and moe_cz_alpha > 0 and torch.isfinite(raw_cz_lz):
+                        loss = loss + moe_cz_alpha * raw_cz_lz
+                        moe_cz_lz_val = raw_cz_lz.item()
+                        logging.debug(
+                            "[Rank %d] batch %d  cz_Lz=%.6f  (weighted: %.6f)",
+                            self.rank, batch_idx, moe_cz_lz_val, moe_cz_alpha * moe_cz_lz_val,
+                        )
+
                 if training:
                     optimizers = self.optimizers or ([self.optimizer] if self.optimizer else [])
                     for optimizer in optimizers:
@@ -966,6 +1004,13 @@ class Trainer:
             #     # Optional: track how often this happens
             #     metric_sum["nan_loss"] += 1
             # metric_count["loss"] += targets.size(0)
+
+            if training and moe_l_aux_val != 0.0:
+                metric_sum["moe_l_aux"] += moe_l_aux_val * targets.size(0)
+                metric_count["moe_l_aux"] += targets.size(0)
+            if training and moe_cz_lz_val != 0.0:
+                metric_sum["moe_cz_lz"] += moe_cz_lz_val * targets.size(0)
+                metric_count["moe_cz_lz"] += targets.size(0)
 
             logits_for_metrics = outputs.mean(dim=0) if outputs.dim() == 3 else outputs
             preds = torch.argmax(logits_for_metrics, dim=1)
@@ -997,7 +1042,8 @@ class Trainer:
 
             if training:
                 self.global_step += 1
-                self._log_train_step(self.global_step, reduced_loss, reduced_accuracy, epoch)
+                self._log_train_step(self.global_step, reduced_loss, reduced_accuracy, epoch,
+                                     moe_l_aux=moe_l_aux_val, moe_cz_lz=moe_cz_lz_val)
 
             if progress is not None:
                 progress.set_postfix({"loss": f"{reduced_loss:.4f}"}, refresh=False)
@@ -1016,6 +1062,29 @@ class Trainer:
         if metric_tracker is not None:
             metrics["accuracy"] = float(metric_tracker.compute().item())
 
+        # Log MoE auxiliary loss epoch averages during full fine-tuning (no adapter)
+        if training and not getattr(self.config, "use_peft", False) and self.is_rank_zero():
+            avg_l_aux = (
+                metric_sum["moe_l_aux"] / metric_count["moe_l_aux"]
+                if metric_count["moe_l_aux"] > 0 else 0.0
+            )
+            avg_cz_lz = (
+                metric_sum["moe_cz_lz"] / metric_count["moe_cz_lz"]
+                if metric_count["moe_cz_lz"] > 0 else 0.0
+            )
+            logging.info(
+                "  [MoE aux losses]  L_aux=%.6f (alpha=%.4f, contribution=%.6f)  "
+                "cz_Lz=%.6f (alpha=%.4f, contribution=%.6f)",
+                avg_l_aux,
+                getattr(self.config, "moe_aux_loss_alpha", 0.01),
+                getattr(self.config, "moe_aux_loss_alpha", 0.01) * avg_l_aux,
+                avg_cz_lz,
+                getattr(self.config, "moe_cz_loss_alpha", 0.001),
+                getattr(self.config, "moe_cz_loss_alpha", 0.001) * avg_cz_lz,
+            )
+            metrics["moe_l_aux"] = avg_l_aux
+            metrics["moe_cz_lz"] = avg_cz_lz
+
         if self.config.compute_physics_metrics and epoch_probs:
             metrics.update(
                 self._compute_epoch_physics_metrics(epoch_probs, epoch_targets, epoch_weights, training=training)
@@ -1024,18 +1093,24 @@ class Trainer:
             progress.close()
         return metrics
 
-    def _log_train_step(self, step: int, loss: float, accuracy: float, epoch: int) -> None:
+    def _log_train_step(
+            self, step: int, loss: float, accuracy: float, epoch: int,
+            moe_l_aux: float = 0.0, moe_cz_lz: float = 0.0,
+    ) -> None:
         if self.wandb_run is None or not self.is_rank_zero():
             return
-        self.wandb_run.log(
-            {
-                "train/loss": loss,
-                "metrics/train_accuracy": accuracy,
-                "epoch": epoch + 1,
-                **self._optimizer_learning_rates(),
-            },
-            step=step,
-        )
+        payload: Dict[str, Any] = {
+            "train/loss": loss,
+            "metrics/train_accuracy": accuracy,
+            "epoch": epoch + 1,
+            **self._optimizer_learning_rates(),
+        }
+        if not getattr(self.config, "use_peft", False):
+            if moe_l_aux != 0.0:
+                payload["train/moe_l_aux"] = moe_l_aux
+            if moe_cz_lz != 0.0:
+                payload["train/moe_cz_lz"] = moe_cz_lz
+        self.wandb_run.log(payload, step=step)
 
     def _format_metric_group(self, metrics: Dict[str, float], prefix: str) -> Dict[str, float]:
         formatted: Dict[str, float] = {}
@@ -1119,9 +1194,11 @@ class Trainer:
 
             "train_trafo_bin_sig",
             "val_trafo_bin_sig",
+            "train_moe_l_aux",
+            "train_moe_cz_lz",
         ]:
             if key in metrics:
-                msg_parts.append(f"{key}={metrics[key]:.4f}")
+                msg_parts.append(f"{key}={metrics[key]:.6f}")
         logging.info(" | ".join(msg_parts))
 
     def _collect_predictions(

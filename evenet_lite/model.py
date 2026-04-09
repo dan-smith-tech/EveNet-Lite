@@ -252,14 +252,30 @@ class EveNetLite(nn.Module):
         return None
 
     def forward(self, x: torch.Tensor, x_mask: torch.Tensor, globals: torch.Tensor) -> torch.Tensor:
+        _moe_l_aux = x.new_zeros(())
+        _moe_cz_lz = x.new_zeros(())
+
         if self.ensemble_mode == "independent":
-            outputs = [model(x=x, x_mask=x_mask, globals=globals) for model in self.models]
+            outputs = []
+            for m in self.models:
+                logit = m(x=x, x_mask=x_mask, globals=globals)
+                outputs.append(logit)
+                _moe_l_aux = _moe_l_aux + m.backbone.PET.moe_l_aux
+                _moe_cz_lz = _moe_cz_lz + m.backbone.PET.moe_cz_lz
+            if self.n_ensemble > 1:
+                _moe_l_aux = _moe_l_aux / self.n_ensemble
+                _moe_cz_lz = _moe_cz_lz / self.n_ensemble
         else:
             embeddings, input_point_cloud_mask, event_token = self.backbone(x, x_mask, globals)
             outputs = [
                 _apply_classification_head(head, embeddings, input_point_cloud_mask, event_token)
                 for head in self.Classification
             ]
+            _moe_l_aux = self.backbone.PET.moe_l_aux
+            _moe_cz_lz = self.backbone.PET.moe_cz_lz
+
+        self.moe_l_aux = _moe_l_aux
+        self.moe_cz_lz = _moe_cz_lz
 
         if self.n_ensemble == 1:
             return outputs[0]
