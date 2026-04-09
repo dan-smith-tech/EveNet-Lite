@@ -665,3 +665,59 @@ class DebugCallback(Callback):
             return
         formatted = ", ".join([f"{k}={v:.4f}" for k, v in metrics.items()])
         logging.info("[Debug] Epoch %d complete | %s", epoch + 1, formatted)
+
+
+class MoEExpertDistributionCallback(Callback):
+    """Log the per-expert input distribution after each validation epoch.
+
+    During eval, every MoE layer in the model accumulates how many tokens were
+    routed to each expert.  At the end of each epoch this callback prints a
+    bar-chart breakdown so you can quickly spot load-imbalance.
+
+    Args:
+        log_every_n_epochs: Only log on epochs that are a multiple of this
+            value (default 1 = every epoch).
+
+    Example::
+
+        from evenet_lite import Trainer, TrainerConfig, MoEExpertDistributionCallback
+
+        trainer = Trainer(model, feature_names, config,
+                          callbacks=[MoEExpertDistributionCallback()])
+        trainer.fit(train_dataset, val_dataset=val_dataset, epochs=50)
+    """
+
+    def __init__(self, log_every_n_epochs: int = 1) -> None:
+        self.log_every_n_epochs = max(1, log_every_n_epochs)
+
+    def on_epoch_start(self, trainer: "Trainer", epoch: int) -> None:
+        # Reset counts at the start of every tracked epoch so each epoch's
+        # distribution is independent.  Counts only accumulate during eval
+        # (model.training == False), so the training pass is unaffected.
+        if epoch % self.log_every_n_epochs != 0:
+            return
+        try:
+            from evenet.network.layers.transformer import MoE
+        except ImportError:
+            return
+        model = trainer._unwrap_model() if hasattr(trainer, "_unwrap_model") else trainer.model
+        for m in model.modules():
+            if isinstance(m, MoE):
+                m.reset_expert_dispatch_counts()
+
+    def on_epoch_end(self, trainer: "Trainer", epoch: int, metrics: Dict[str, float]) -> None:
+        if not trainer.is_rank_zero():
+            return
+        if epoch % self.log_every_n_epochs != 0:
+            return
+        if getattr(trainer, "val_loader", None) is None:
+            return
+        try:
+            from evenet.network.layers.transformer import log_moe_expert_distribution
+        except ImportError:
+            logging.warning(
+                "MoEExpertDistributionCallback: could not import from evenet-core; skipping."
+            )
+            return
+        model = trainer._unwrap_model() if hasattr(trainer, "_unwrap_model") else trainer.model
+        log_moe_expert_distribution(model, reset=False)  # reset was done in on_epoch_start

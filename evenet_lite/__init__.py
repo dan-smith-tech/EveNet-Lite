@@ -1,5 +1,5 @@
 from .classifier import EvenetLiteClassifier
-from .callbacks import Callback, DebugCallback, EvenetLiteNormalizer, NormalizationCallback
+from .callbacks import Callback, DebugCallback, EvenetLiteNormalizer, NormalizationCallback, MoEExpertDistributionCallback
 from .checkpoint import load_checkpoint, save_checkpoint
 from .data import DistributedWeightedSampler, EvenetTensorDataset
 from .hf_utils import load_pretrained_weights
@@ -8,6 +8,7 @@ from .runner import run_evenet_lite_training
 from .trainer import Trainer, TrainerConfig
 
 __all__ = [
+    "MoEExpertDistributionCallback",
     "EvenetLiteClassifier",
     "EvenetLiteNormalizer",
     "NormalizationCallback",

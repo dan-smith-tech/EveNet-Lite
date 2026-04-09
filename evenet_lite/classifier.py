@@ -325,13 +325,19 @@ class EvenetLiteClassifier:
         """Soft-load pretrained weights with shape safety and concise reporting."""
 
         logger = logging.getLogger(__name__)
-        logger.info(
-            "Loading pretrained weights using source=%s (repo_id=%s, filename=%s, local_path=%s)",
-            source,
-            repo_id,
-            filename,
-            local_path,
-        )
+        if source == "local":
+            logger.info(
+                "Loading pretrained weights using source=%s (local_path=%s)",
+                source,
+                local_path,
+            )
+        else:
+            logger.info(
+                "Loading pretrained weights using source=%s (repo_id=%s, filename=%s)",
+                source,
+                repo_id,
+                filename,
+            )
 
         checkpoint: Optional[Dict[str, Any]] = None
         if source == "hf":
