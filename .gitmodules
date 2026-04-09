@@ -1,3 +1,4 @@
 [submodule "evenet"]
 	path = evenet
 	url = https://github.com/dan-smith-tech/EveNet-Core.git
+	branch = main
