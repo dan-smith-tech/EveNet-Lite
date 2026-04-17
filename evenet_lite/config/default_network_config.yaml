@@ -36,8 +36,8 @@ Body:
     use_moe: true
     moe_base_num_experts: 16
     moe_expert_segmentation_factor: 1
-    moe_base_select_top_k: 1
-    moe_num_shared_experts: 1
+    moe_base_select_top_k: 2
+    moe_num_shared_experts: 0
     moe_scale_expert_dim: true
     moe_alpha: 0.1
     moe_cz: 0.001
